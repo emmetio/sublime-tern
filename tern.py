@@ -110,7 +110,7 @@ def is_js_view(view):
 def active_view():
 	return sublime.active_window().active_view()
 
-def type_to_icon(t):
+def completion_hint(t):
 	suffix = ''
 	if t == '?':
 		suffix = 'unknown'
@@ -125,6 +125,22 @@ def type_to_icon(t):
 
 	return icons[suffix]
 
+
+def completion_item(item):
+	"Returns ST completion representation for given Tern one"
+	t = item['type']
+	label = item['text']
+	m = re.match(r'fn\((.*)\)', t)
+	if m:
+		fn_def = m.group(1) or ''
+		args = [p.split(':')[0].strip() for p in fn_def.split(',')]
+		label += '(%s)' % ', '.join(args)
+	else:
+		label += '\t%s' % completion_hint(t)
+
+	return (label, item['text'])
+
+
 class JSRegistry(sublime_plugin.EventListener):
 	def on_activated(self, view):
 		if is_js_view(view):
@@ -137,7 +153,7 @@ class JSRegistry(sublime_plugin.EventListener):
 
 		completions = ctx.js().locals.ternHints(view)
 		if completions and hasattr(completions, 'list'):
-			cmpl = [('%s\t%s' % (c['text'], type_to_icon(c['type'])), c['text']) for c in completions['list']]
+			cmpl = [completion_item(c) for c in completions['list']]
 			# print(cmpl)
 			return cmpl
 

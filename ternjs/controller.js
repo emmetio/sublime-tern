@@ -159,7 +159,6 @@ function ternHints(view, callback) {
 	var req = buildRequest(view, "completions");
 	var res = null;
 
-	log('Request start');
 	ternServer.request(req.request, function(error, data) {
 		if (error) {
 			throw error;
@@ -179,7 +178,6 @@ function ternHints(view, callback) {
 			list: completions
 		};
 
-		log('Completions: ' + JSON.stringify(completions));
 		if (callback) {
 			callback(res);
 		}
