@@ -1,0 +1,6 @@
+[
+	{
+		"caption": "TernJS: Show Hints",
+		"command": "tern_show_hints"
+	}
+]
