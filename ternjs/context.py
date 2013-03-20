@@ -115,6 +115,7 @@ class Context():
 		# detect reader encoding
 		self._use_unicode = None
 		self._core_files = [] + core_files + files
+		self.default_libs = self._create_env()
 
 	def log(self, message):
 		if self.logger:
@@ -163,8 +164,8 @@ class Context():
 					self._ctx.locals[k] = self._contrib[k]
 
 			# start server
-			env = self._create_env()
-			self._ctx.locals.startServer(env)
+			# env = self._create_env()
+			# self._ctx.locals.startServer(env)
 
 		return self._ctx
 

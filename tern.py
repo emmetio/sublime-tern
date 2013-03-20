@@ -2,6 +2,7 @@ import sys
 import os.path
 import imp
 import re
+import json
 
 import sublime, sublime_plugin
 
@@ -21,6 +22,9 @@ from ternjs.context import Context
 
 # JS context
 ctx = None
+
+# Project info cache
+projects_cache = None
 
 icons = {
 	'object':  '{}',
@@ -46,11 +50,9 @@ def init():
 	sys.path += pyv8_paths
 
 	def file_reader(f):
-		print('Request contents of %s file' % f)
 		if f[0] == '{' and f[-1] == '}':
 			# it's unsaved file, locate it 
 			buf_id = f[1:-1]
-			print('Get buffer %s' % buf_id)
 			view = view_for_buffer_id(buf_id)
 			if view:
 				return view.substr(sublime.Region(0, view.size()))
@@ -61,7 +63,8 @@ def init():
 
 	contrib = {
 		'sublimeReadFile': file_reader,
-		'sublimeGetFileNameFromView': file_name_from_view
+		'sublimeGetFileNameFromView': file_name_from_view,
+		'sublimeViewContents': view_contents
 	}
 
 	globals()['ctx'] = Context(
@@ -70,8 +73,8 @@ def init():
 	)
 
 	ctx.js()
+	sync_projects()
 
-	print('Created context')
 
 def file_name_from_view(view):
 	name = view.file_name()
@@ -87,7 +90,9 @@ def view_for_buffer_id(buf_id):
 				return v
 
 	return None
-	
+
+def view_contents(view):
+	return view.substr(sublime.Region(0, view.size()))
 
 def js_file_reader(file_path, use_unicode=True):
 	if hasattr(sublime, 'load_resource'):
@@ -99,7 +104,7 @@ def js_file_reader(file_path, use_unicode=True):
 
 		rel_path = rel_path.replace('.sublime-package', '')
 		# for Windows we have to replace slashes
-		print('Loading %s' % rel_path)
+		# print('Loading %s' % rel_path)
 		rel_path = rel_path.replace('\\', '/')
 		return sublime.load_resource(rel_path)
 
@@ -141,18 +146,48 @@ def completion_item(item):
 
 	return (label, item['text'])
 
+def all_projects():
+	if not globals()['projects_cache']:
+		p = project.all_projects()
+		p.append({'id': 'empty'})
+		globals()['projects_cache'] = p
+
+	return projects_cache
+
+def sync_projects():
+	if not ctx or not ctx.js(): return
+
+	for p in all_projects():
+		# pass data as JSON string to ensure that all
+		# data types are valid
+		ctx.js().locals.startServer(json.dumps(p, ensure_ascii=False), ctx.default_libs)
+
+def project_for_view(view):
+	file_name = view.file_name()
+	if file_name:
+		for p in all_projects():
+			proj_dir = os.path.dirname(p['id'])
+			if file_name.startswith(proj_dir):
+				return p
+	
+	return None
+	
 
 class JSRegistry(sublime_plugin.EventListener):
-	def on_activated(self, view):
-		if is_js_view(view):
-			print('Activating %s' % file_name_from_view(view))
-			ctx.js().locals.registerDoc(view)
+	def on_load(self, view):
+		print('Loaded %s' % view.file_name())
+
+# 	def on_activated(self, view):
+# 		if is_js_view(view):
+# 			print('Activating %s' % file_name_from_view(view))
+# 			ctx.js().locals.registerDoc(view)
 
 	def on_query_completions(self, view, prefix, locations):
 		if not is_js_view(view):
 			return []
 
-		completions = ctx.js().locals.ternHints(view)
+		proj = project_for_view(view) or {}
+		completions = ctx.js().locals.ternHints(view, proj.get('id', 'empty'))
 		if completions and hasattr(completions, 'list'):
 			cmpl = [completion_item(c) for c in completions['list']]
 			# print(cmpl)
@@ -166,13 +201,13 @@ class JSRegistry(sublime_plugin.EventListener):
 	# 		print('Deactivating %s' % file_name_from_view(view))
 	# 		ctx.js().locals.unregisterDoc(view)
 	
-class TernShowHints(sublime_plugin.TextCommand):
-	"""Show JS hints for current document"""
-	def run(self, edit, **kw):
-		view = active_view()
-		if is_js_view(view):
-			print('Requesting hints')
-			ctx.js().locals.ternHints(view, lambda x: print('hints: %s' % x['list']))
+# class TernShowHints(sublime_plugin.TextCommand):
+# 	"""Show JS hints for current document"""
+# 	def run(self, edit, **kw):
+# 		view = active_view()
+# 		if is_js_view(view):
+# 			print('Requesting hints')
+# 			ctx.js().locals.ternHints(view, lambda x: print('hints: %s' % x['list']))
 		
 class TernGetProjects(sublime_plugin.TextCommand):
 	def run(self, edit, **kw):

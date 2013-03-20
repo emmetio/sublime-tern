@@ -1,32 +1,96 @@
-var ternServer = null;
+/**
+ * Since user can open multiple projects on single ST instance,
+ * we have to create individual server for each project
+ * @type {Object}
+ */
+var ternServers = {};
 var ternDocs = [];
 
-function startServer(env) {
-	env = _.map(env, function(v, k) {
-		return _.isString(v) ? JSON.parse(v) : v;
-	});
+function startServer(project, defLibs) {
+	if (_.isString(project)) {
+		project = JSON.parse(project);
+	}
+	
+	log('Staring TernJS server for ' + project.id);
+	
+	if (!(project.id in ternServers)) {
+		var mapLibs = function(v, k) {
+			return _.isString(v) ? JSON.parse(v) : v;
+		};
 
-	ternServer = new tern.Server({
-		getFile: getFile, 
-		environment: env, 
-		debug: true
-	});
+		var env = _.map(defLibs || [], mapLibs);
+		if (project.libs) {
+			env = env.concat(_.map(project.libs, mapLibs));
+		}
 
-	log('TernJS server started');
+		ternServers[project.id] = new tern.Server({
+			getFile: getFile, 
+			environment: env, 
+			debug: true
+		});
+	}
+
+	if (project.files) {
+		syncFiles(ternServers[project.id], project.files);
+	}
 }
 
-function getFile(file) {
-	var text = sublimeReadFile(file), env = [];
-	var envSpec = /\/\/ environment=(\w+)\n/g, m;
-	while (m = envSpec.exec(text)) 
-		env.push(envData[m[1]]);
+function killServer(project) {
+	var server = ternServers[project.id];
+	if (server) {
+		server.reset();
+		delete ternServers[project.id];
+	}
+}
 
-	return {
-		text: text, 
-		name: file, 
-		env: env, 
-		ast: acorn.parse(text)
-	};
+/**
+ * Sync project files with active server
+ * @param  {tern.Server} server Server instance to update
+ * @param  {Array} files  Actual project file list
+ */
+function syncFiles(server, files) {
+	var loadedFiles = [];
+	if (server.files) {
+		loadedFiles = _.pluck(server.files, 'name');
+	}
+
+	var toAdd = _.difference(files, loadedFiles);
+	var toRemove = _.difference(loadedFiles, files);
+
+	_.each(toAdd, function(f) {
+		server.addFile(f);
+	});
+
+	_.each(toRemove, function(f) {
+		server.delFile(f);
+	});
+}
+
+function getFile(file, callback) {
+	log('Requesting file ' + file);
+	var content = '';
+	if (!/(handlebars|underscore)\.js$/.test(file)) {
+		content = sublimeReadFile(file);
+	}
+	return callback(null, content);
+	// return callback(null, sublimeReadFile(file));
+
+
+	// var text = sublimeReadFile(file), env = [];
+	// var envSpec = /\/\/ environment=(\w+)\n/g, m;
+	// while (m = envSpec.exec(text)) {
+	// 	env.push(envData[m[1]]);
+	// }
+
+	// callback()
+
+	// log()
+	// return {
+	// 	text: text, 
+	// 	name: file, 
+	// 	env: env, 
+	// 	ast: acorn.parse(text)
+	// };
 }
 
 function registerDoc(name) {
@@ -102,16 +166,17 @@ function buildRequest(view, query, allowFragments) {
 		}
 	}
 
-	if (!startPos) startPos = endPos;
-
-	
-	var curDoc = docFromView(view);
-	if (!curDoc) {
-		throw 'Unable to locate document for given view';
+	if (!startPos) {
+		startPos = endPos;
 	}
+	
+	// var curDoc = docFromView(view);
+	// if (!curDoc) {
+	// 	throw 'Unable to locate document for given view';
+	// }
 
 	// TODO handle incremental doc change
-	query.file = curDoc.name;
+	// query.file = curDoc.name;
 	// if (curDoc.changed) {
 	// 	if (cm.lineCount() > 100 && allowFragments !== false &&
 	// 			curDoc.changed.to - curDoc.changed.from < 100 &&
@@ -140,11 +205,20 @@ function buildRequest(view, query, allowFragments) {
 	// 		doc.changed = null;
 	// 	}
 	// }
-	files.push({
-		name: curDoc.name,
-		type: 'full',
-		text: sublimeReadFile(curDoc.name)
-	});
+	var fileName = sublimeGetFileNameFromView(view);
+	query.file = fileName;
+	if (view.is_dirty()) {
+		files.push({
+			name: fileName,
+			type: 'full',
+			text: sublimeViewContents(view)
+		});
+	}
+	// files.push({
+	// 	name: fileName,
+	// 	type: 'full',
+	// 	text: sublimeReadFile(fileName)
+	// });
 
 	return {
 		request: {
@@ -155,11 +229,19 @@ function buildRequest(view, query, allowFragments) {
 	};
 }
 
-function ternHints(view, callback) {
+function ternHints(view, projectId, callback) {
+	log('Get hints for ' + projectId);
 	var req = buildRequest(view, "completions");
+	// log(JSON.stringify(req));
 	var res = null;
+	var server = ternServers[projectId];
+	if (!server) {
+		log('No sutable server for project "' + projectId + '"');
+		return null;
+	}
 
-	ternServer.request(req.request, function(error, data) {
+	server.request(req.request, function(error, data) {
+		log('Resp: ' + error);
 		if (error) {
 			throw error;
 		}

@@ -100,7 +100,7 @@
         var found = scope.findVar(word);
         if (found) found = found.getType();
         if (!found) {
-          type = ANull;
+          type = infer.ANull;
         } else if (found instanceof infer.Fn && /^[A-Z]/.test(word)) {
           var proto = found.getProp("prototype").getType();
           if (proto instanceof infer.Obj) type = infer.getInstance(proto);

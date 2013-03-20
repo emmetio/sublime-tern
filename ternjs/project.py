@@ -97,6 +97,23 @@ def projects_from_opened_files(window=None):
 
 	return list(result)
 
+def all_projects():
+	"""
+	Returns data about all available projects
+	for current ST instance
+	"""
+	projects = projects_from_opened_files()
+	result = []
+	for p in projects:
+		config = get_ternjs_config(p)
+		result.append({
+			'id': p,
+			'config': config,
+			'files': get_ternjs_files(p, config)
+		})
+
+	return result
+
 
 
 
