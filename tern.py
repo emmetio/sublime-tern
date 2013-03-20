@@ -15,6 +15,7 @@ if 'ternjs.reloader' in sys.modules:
 import ternjs.reloader
 
 import ternjs.pyv8loader as pyv8loader
+import ternjs.project as project
 from ternjs.context import js_file_reader as _js_file_reader
 from ternjs.context import Context
 
@@ -173,7 +174,12 @@ class TernShowHints(sublime_plugin.TextCommand):
 			print('Requesting hints')
 			ctx.js().locals.ternHints(view, lambda x: print('hints: %s' % x['list']))
 		
-
+class TernGetProjects(sublime_plugin.TextCommand):
+	def run(self, edit, **kw):
+		projects = project.projects_from_opened_files()
+		print(projects)
+		if projects:
+			print(project.get_ternjs_files(projects[0]))
 
 def plugin_loaded():
 	sublime.set_timeout(init, 200)

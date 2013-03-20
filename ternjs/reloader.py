@@ -12,7 +12,9 @@ for mod in sys.modules:
 
 mods_load_order = [
 	'ternjs.pyv8loader',
-	'ternjs.context'
+	'ternjs.context',
+	'ternjs.formic',
+	'ternjs.project'
 ]
 
 for mod in mods_load_order:
