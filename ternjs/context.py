@@ -11,13 +11,15 @@ import re
 BASE_PATH = os.path.abspath(os.path.dirname(__file__))
 is_python3 = sys.version_info[0] > 2
 
-core_files = ['bootstrap.js', 'lodash.js', 'acorn.js', 'acorn_loose.js', 'walk.js', 
-			  'tern.js', 'env.js', 'jsdoc.js', 'infer.js', 'controller.js']
+core_files = ['js/bootstrap.js', 'js/lodash.js', 
+			  'js/acorn.js', 'js/acorn_loose.js', 'js/walk.js', 
+			  'js/tern.js', 'js/env.js', 'js/jsdoc.js', 
+			  'js/infer.js', 'js/controller.js']
 
 tern_env = {
-	'ecma5':   'ecma5.json',
-	'browser': 'browser.json',
-	'jquery':  'jquery.json'
+	'ecma5':   'libs/ecma5.json',
+	'browser': 'libs/browser.json',
+	'jquery':  'libs/jquery.json'
 }
 
 def should_use_unicode():
