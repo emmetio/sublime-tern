@@ -161,59 +161,52 @@ function buildRequest(view, query, allowFragments) {
 	};
 }
 
-function ternHints(view, projectId, callback) {
-	var req = buildRequest(view, "completions");
-	// log(JSON.stringify(req));
-	var res = null;
+function sendRequest(request, projectId) {
 	var server = ternServers[projectId];
+	var res = null;
 	if (!server) {
 		log('No sutable server for project "' + projectId + '"');
 		return null;
 	}
 
-	server.request(req.request, function(error, data) {
-		if (error) {
-			throw error;
-		}
-
-		var completions = _.map(data.completions, function(completion) {
-			return {
-				text: completion.name,
-				type: completion.type,
-				guess: !!data.guess
-			};
-		});
-
-		res = {
-			from: data.from + req.offset,
-			to: data.to + req.offset,
-			list: completions
-		};
-
-		if (callback) {
-			callback(res);
-		}
-	});
-
-	return res;
-}
-
-
-function ternJumpToDefinition(view, projectId) {
-	var req = buildRequest(view, "definition", false);
-	var server = ternServers[projectId];
-	if (!server) {
-		log('No sutable server for project "' + projectId + '"');
-		return null;
-	}
-
-	var res = null;
-	server.request(req.request, function(error, data) {
+	server.request(request, function(error, data) {
 		if (error) {
 			throw error;
 		}
 
 		res = data;
 	});
+
 	return res;
+}
+
+function ternHints(view, projectId, callback) {
+	var req = buildRequest(view, "completions");
+	// log(JSON.stringify(req));
+	var res = sendRequest(req.request, projectId);
+	if (res) {
+		var completions = _.map(res.completions, function(completion) {
+			return {
+				text: completion.name,
+				type: completion.type,
+				guess: !!res.guess
+			};
+		});
+
+		return {
+			from: res.from + req.offset,
+			to: res.to + req.offset,
+			list: completions
+		};
+	}
+}
+
+function ternJumpToDefinition(view, projectId) {
+	var req = buildRequest(view, "definition", false);
+	return sendRequest(req.request, projectId);
+}
+
+function ternFindRefs(view, projectId) {
+	var req = buildRequest(view, "refs", false);
+	return sendRequest(req.request, projectId);
 }

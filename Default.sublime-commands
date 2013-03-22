@@ -6,5 +6,9 @@
 	{
 		"caption": "TernJS: Jump to definition",
 		"command": "ternjs_jump_to_definition"
+	},
+	{
+		"caption": "TernJS: Rename variable",
+		"command": "ternjs_rename_variable"
 	}
 ]

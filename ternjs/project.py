@@ -59,7 +59,7 @@ def find_project_in_dir(dir_path):
 
 def get_ternjs_config(project):
 	"Returns TernJS config from project file"
-	if os.path.exists(project):
+	if project and os.path.exists(project):
 		conf = json.load(open(project))
 		return conf.get('ternjs', {})
 
@@ -102,7 +102,9 @@ def projects_from_opened_files(window=None):
 		for view in wnd.views():
 			f = view.file_name()
 			if f:
-				result.add(locate_project(f, result))
+				proj = locate_project(f, result)
+				if proj:
+					result.add(proj)
 
 	return list(result)
 

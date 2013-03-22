@@ -25,6 +25,9 @@ from ternjs.context import js_file_reader as _js_file_reader
 ctx = None
 
 _jump_def = None
+_rename_session = None
+
+rename_region_key = 'ternjs-rename-region'
 
 icons = {
 	'object':  '{}',
@@ -218,7 +221,7 @@ def apply_jump_def(view, dfn=None):
 
 	globals()['_jump_def'] = None
 
-class JSRegistry(sublime_plugin.EventListener):
+class TernJSEventListener(sublime_plugin.EventListener):
 	def on_load(self, view):
 		if is_js_view(view):
 			apply_jump_def(view)
@@ -244,7 +247,7 @@ class JSRegistry(sublime_plugin.EventListener):
 
 
 	def on_query_completions(self, view, prefix, locations):
-		if not is_js_view(view):
+		if not is_js_view(view) or view.get_regions(rename_region_key):
 			return []
 
 		proj = project.project_for_view(view) or {}
@@ -257,8 +260,18 @@ class JSRegistry(sublime_plugin.EventListener):
 
 		return []
 
+	def on_query_context(self, view, key, op, operand, match_all):
+		if key == 'ternjs.rename':
+			r = view.get_regions(rename_region_key)
+			if r and _rename_session:
+				return True
+
+		return None
+
+
 class TernjsReload(sublime_plugin.TextCommand):
 	def run(self, edit, **kw):
+		active_view().erase_regions(rename_region_key)
 		reload_ternjs()
 
 class TernjsJumpToDefinition(sublime_plugin.TextCommand):
@@ -281,6 +294,52 @@ class TernjsJumpToDefinition(sublime_plugin.TextCommand):
 			else:
 				apply_jump_def(view, dfn)
 
+class TernjsRenameVariable(sublime_plugin.TextCommand):
+	def run(self, edit, **kw):
+		if not can_run(): return
+		view = active_view()
+
+		proj = project.project_for_view(view) or {}
+		refs = ctx.js().locals.ternFindRefs(view, proj.get('id', 'empty'))
+		
+		# do rename for local references only
+		regions = []
+		file_name = file_name_from_view(view)
+		caret_pos = view.sel()[0].begin()
+		ctx_region = None
+
+		for r in refs['refs']:
+			if file_name == r['file']:
+				rg = sublime.Region(r['start'], r['end'])
+				if rg.contains(caret_pos):
+					ctx_region = len(regions)
+				regions.append(rg)
+
+		if regions:
+			view.sel().clear()
+			view.sel().add_all(regions)
+			view.add_regions(rename_region_key, regions, 'string', flags=sublime.HIDDEN)
+
+			# create rename session
+			globals()['_rename_session'] = {
+				'old_name': view.substr(view.sel()[0]),
+				'ctx_region': ctx_region,
+				'caret_pos': caret_pos
+			}
+
+class TernjsCommitRename(sublime_plugin.TextCommand):
+	def run(self, edit, **kw):
+		view = active_view()
+		regions = view.get_regions(rename_region_key)
+		view.erase_regions(rename_region_key)
+		if regions:
+			ctx_region = _rename_session['ctx_region']
+			if ctx_region < len(regions):
+				r = regions[ctx_region]
+				view.sel().clear()
+				view.sel().add(sublime.Region(r.b, r.b))
+
+		globals()['_rename_session'] = None
 
 
 def plugin_loaded():
