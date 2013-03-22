@@ -24,9 +24,6 @@ from ternjs.context import js_file_reader as _js_file_reader
 # JS context
 ctx = None
 
-# Project info cache
-projects_cache = None
-
 icons = {
 	'object':  '{}',
 	'array':   '[]',
@@ -114,6 +111,9 @@ def js_file_reader(file_path, use_unicode=True):
 def is_js_view(view):
 	return view.score_selector(0, 'source.js') > 0
 
+def can_run():
+	return ctx and ctx.js()
+
 def active_view():
 	return sublime.active_window().active_view()
 
@@ -148,68 +148,91 @@ def completion_item(item):
 	return (label, item['text'])
 
 def all_projects():
-	if not globals()['projects_cache']:
-		p = project.all_projects()
-		p.append({'id': 'empty'})
-		globals()['projects_cache'] = p
+	proj = copy(project.all_projects())
+	proj.append({'id': 'empty'})
+	return proj
 
-	return projects_cache
+def sync_project(p):
+	if not can_run(): return
 
-def sync_projects():
-	if not ctx or not ctx.js(): return
+	print('Syncing project %s' % p['id'])
+
+	config = p.get('config', {})
+	# collect libraries for current project
+	libs = copy(ternjs.DEFAULT_LIBS);
+	for l in config.get('libs', []):
+		if l not in libs:
+			libs.append(l)
+
+	# resolve all libraries
+	resolved_libs = []
+	project_dir = os.path.dirname(p['id'])
+	for l in libs:
+		if l in ctx.default_libs:
+			resolved_libs.append(ctx.default_libs[l])
+		else:
+			# it's not a predefined library, try lo read it from disk
+			lib_path = l
+			if not os.path.isabs(lib_path):
+				lib_path = os.path.normpath(os.path.join(project_dir, lib_path))
+
+			if os.path.isfile(lib_path):
+				resolved_libs.append(_js_file_reader(lib_path))
+
+	# pass data as JSON string to ensure that all
+	# data types are valid
+	ctx.js().locals.startServer(json.dumps(p, ensure_ascii=False), resolved_libs)
+
+def sync_all_projects():
+	if not can_run(): return
 
 	for p in all_projects():
-		config = p.get('config', {})
-		# collect libraries for current project
-		libs = copy(ternjs.DEFAULT_LIBS);
-		for l in config.get('libs', []):
-			if l not in libs:
-				libs.append(l)
+		sync_project(p)
 
-		# resolve all libraries
-		resolved_libs = []
-		project_dir = os.path.dirname(p['id'])
-		for l in libs:
-			if l in ctx.default_libs:
-				resolved_libs.append(ctx.default_libs[l])
-			else:
-				# it's not a predefined library, try lo read it from disk
-				lib_path = l
-				if not os.path.isabs(lib_path):
-					lib_path = os.path.normpath(os.path.join(project_dir, lib_path))
+def reset_project(p):
+	if not can_run(): return
 
-				if os.path.isfile(lib_path):
-					resolved_libs.append(_js_file_reader(lib_path))
+	ctx.js().locals.killServer(p['id'])
 
-		# pass data as JSON string to ensure that all
-		# data types are valid
-		ctx.js().locals.startServer(json.dumps(p, ensure_ascii=False), resolved_libs)
+def reset_all_projects():
+	if not can_run(): return
+	for p in all_projects():
+		reset_project(p)
 
-def project_for_view(view):
-	file_name = view.file_name()
-	if file_name:
-		for p in all_projects():
-			proj_dir = os.path.dirname(p['id'])
-			if file_name.startswith(proj_dir):
-				return p
-	
-	return None
-	
+def reload_ternjs():
+	reset_all_projects()
+	project.reset_cache()
+	sync_all_projects()
 
 class JSRegistry(sublime_plugin.EventListener):
 	def on_load(self, view):
-		print('Loaded %s' % view.file_name())
+		if is_js_view(view):
+			p = project.project_for_view(view)
+			if p:
+				sync_project(p)
 
-# 	def on_activated(self, view):
-# 		if is_js_view(view):
-# 			print('Activating %s' % file_name_from_view(view))
-# 			ctx.js().locals.registerDoc(view)
+	def on_post_save(self, view):
+		if is_js_view(view):
+			p = project.project_for_view(view)
+			if p:
+				# currently, there's no easy way to push
+				# updated JS file to existing TernJS server
+				# so we have to kill it first and then start again
+				reset_project(p)
+				sync_project(p)
+			return
+
+		file_name = view.file_name()
+		if file_name and file_name.endswith('.sublime-project'):
+			# Project file was updated, re-scan all projects
+			reload_ternjs()
+
 
 	def on_query_completions(self, view, prefix, locations):
 		if not is_js_view(view):
 			return []
 
-		proj = project_for_view(view) or {}
+		proj = project.project_for_view(view) or {}
 		completions = ctx.js().locals.ternHints(view, proj.get('id', 'empty'))
 		if completions and hasattr(completions, 'list'):
 			cmpl = [completion_item(c) for c in completions['list']]
@@ -219,28 +242,12 @@ class JSRegistry(sublime_plugin.EventListener):
 
 		return []
 
-	# def on_deactivated(self, view):
-	# 	if is_js_view(view):
-	# 		print('Deactivating %s' % file_name_from_view(view))
-	# 		ctx.js().locals.unregisterDoc(view)
-	
-# class TernShowHints(sublime_plugin.TextCommand):
-# 	"""Show JS hints for current document"""
-# 	def run(self, edit, **kw):
-# 		view = active_view()
-# 		if is_js_view(view):
-# 			print('Requesting hints')
-# 			ctx.js().locals.ternHints(view, lambda x: print('hints: %s' % x['list']))
-		
-class TernGetProjects(sublime_plugin.TextCommand):
+class TernjsReload(sublime_plugin.TextCommand):
 	def run(self, edit, **kw):
-		projects = project.projects_from_opened_files()
-		print(projects)
-		if projects:
-			print(project.get_ternjs_files(projects[0]))
+		reload_ternjs()
 
 def plugin_loaded():
 	sublime.set_timeout(init, 200)
 
 if not is_st3():
-	init()
+	sublime.set_timeout(init, 200)

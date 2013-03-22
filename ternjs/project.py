@@ -12,6 +12,8 @@ from formic import FileSet
 
 is_python3 = sys.version_info[0] > 2
 
+_cache = None
+
 try:
 	isinstance("", basestring)
 	def isstr(s):
@@ -70,10 +72,17 @@ def get_ternjs_files(project, config=None):
 	project dir and applies "include" and "exclude" patterns
 	from TernJS config
 	"""
-	if config is None:
-		config = get_ternjs_config(project)
+	project_path = None
+	if isinstance(project, dict):
+		project_path = project['id']
+		config = project['config']
+	else:
+		project_path = project
 
-	proj_dir = os.path.dirname(project)
+	if config is None:
+		config = get_ternjs_config(project_path)
+
+	proj_dir = os.path.dirname(project_path)
 	fileset = FileSet(directory=proj_dir,
 					  include=config.get('include', ['**/*.js']),
 					  exclude=config.get('exclude', None))
@@ -97,11 +106,14 @@ def projects_from_opened_files(window=None):
 
 	return list(result)
 
-def all_projects():
+def all_projects(no_cache=False):
 	"""
 	Returns data about all available projects
 	for current ST instance
 	"""
+	if _cache and not no_cache:
+		return _cache
+
 	projects = projects_from_opened_files()
 	result = []
 	for p in projects:
@@ -112,9 +124,42 @@ def all_projects():
 			'files': get_ternjs_files(p, config)
 		})
 
+	globals()['_cache'] = result
 	return result
 
+def project_for_view(view):
+	"Returns project info for given view"
+	file_name = view.file_name()
 
+	projects = all_projects()
 
+	if not file_name:
+		# for new files, try to map it to any opened
+		# project file of current window
+		wnd_projects = projects_from_opened_files(view.window())
+		if wnd_projects:
+			project_id = wnd_projects[0]
+			for p in projects:
+				if p['id'] == project_id:
+					return p
 
+		return None
+
+	# check if file inside project
+	for p in projects:
+		if file_name in p['files']:
+			return p
+
+	# file is not inside any known project: it might be a new file
+	# check if it matches project patterns
+	for p in all_projects():
+		files = get_ternjs_files(p)
+		if file_name in files:
+			p['files'] = files
+			return p
+
+	return None
+
+def reset_cache():
+	globals()['_cache'] = None
 

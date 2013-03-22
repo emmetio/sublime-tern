@@ -28,16 +28,42 @@ function startServer(project, libs) {
 	}
 
 	if (project.files) {
-		syncFiles(ternServers[project.id], project.files);
+		var updated = syncFiles(ternServers[project.id], project.files);
+		if (updated) {
+			// server was updated. Initiate a fake request 
+			// to make sure that first completions request won't take
+			// too much time
+			var fakeRequest = {
+				query: {
+					type: 'completions',
+					end: 0,
+					file: '{empty}'
+				},
+				files: [{
+					name: '{empty}',
+					type: 'full',
+					text: ''
+				}]
+			};
+
+			ternServers[project.id].request(fakeRequest, function() {});
+		}
 	}
 }
 
 function killServer(project) {
-	var server = ternServers[project.id];
+	var serverId = project.id || project;
+	var server = ternServers[serverId];
 	if (server) {
 		server.reset();
-		delete ternServers[project.id];
+		delete ternServers[serverId];
 	}
+}
+
+function killAllServers() {
+	_.each(ternServers, function(server, id) {
+		killServer(id);
+	});
 }
 
 /**
@@ -61,72 +87,21 @@ function syncFiles(server, files) {
 	_.each(toRemove, function(f) {
 		server.delFile(f);
 	});
+
+	if (toRemove.length) {
+		server.reset();
+	}
+
+	return toAdd.length || toRemove.length;
 }
 
 function getFile(file, callback) {
 	log('Requesting file ' + file);
-	var content = '';
-	if (!/(underscore)\.js$/.test(file)) {
-		content = sublimeReadFile(file);
-	}
-	return callback(null, content);
-	// return callback(null, sublimeReadFile(file));
-
-
-	// var text = sublimeReadFile(file), env = [];
-	// var envSpec = /\/\/ environment=(\w+)\n/g, m;
-	// while (m = envSpec.exec(text)) {
-	// 	env.push(envData[m[1]]);
+	var content = sublimeReadFile(file);
+	// if (!/(underscore)\.js$/.test(file)) {
+	// 	content = sublimeReadFile(file);
 	// }
-
-	// callback()
-
-	// log()
-	// return {
-	// 	text: text, 
-	// 	name: file, 
-	// 	env: env, 
-	// 	ast: acorn.parse(text)
-	// };
-}
-
-function registerDoc(name) {
-	if (!_.isString(name)) {
-		name = sublimeGetFileNameFromView(name);
-	}
-
-	// check if current document already exists
-	var hasDoc = !!_.find(ternDocs, function(d) {
-		return d.name == name;
-	});
-
-	if (hasDoc) {
-		log('Document ' + name + ' is already registered');
-		return;
-	}
-
-	var data = {
-		name: name, 
-		changed: null
-	};
-
-	ternDocs.push(data);
-	ternServer.addFile(name);
-}
-
-function unregisterDoc(name) {
-	if (!_.isString(name)) {
-		name = sublimeGetFileNameFromView(name);
-	}
-
-	ternServer.delFile(name);
-
-	for (var i = 0; i < ternDocs.length && name != ternDocs[i].name; ++i) {}
-	ternDocs.splice(i, 1);
-
-	if (ternServer) {
-		ternServer.reset();
-	}
+	return callback(null, content);
 }
 
 /**
@@ -167,41 +142,6 @@ function buildRequest(view, query, allowFragments) {
 		startPos = endPos;
 	}
 	
-	// var curDoc = docFromView(view);
-	// if (!curDoc) {
-	// 	throw 'Unable to locate document for given view';
-	// }
-
-	// TODO handle incremental doc change
-	// query.file = curDoc.name;
-	// if (curDoc.changed) {
-	// 	if (cm.lineCount() > 100 && allowFragments !== false &&
-	// 			curDoc.changed.to - curDoc.changed.from < 100 &&
-	// 			curDoc.changed.from <= startPos.line && curDoc.changed.to > endPos.line) {
-	// 		files.push(getFragmentAround(cm, startPos, endPos));
-	// 		query.file = "#0";
-	// 		offset = files[0].offset;
-	// 		if (query.start != null) query.start -= offset;
-	// 		query.end -= offset;
-	// 	} else {
-	// 		files.push({type: "full",
-	// 								name: curDoc.name,
-	// 								text: cm.getValue()});
-	// 		query.file = curDoc.name;
-	// 		curDoc.changed = null;
-	// 	}
-	// } else {
-	// 	query.file = curDoc.name;
-	// }
-
-
-	// for (var i = 0; i < docs.length; ++i) {
-	// 	var doc = docs[i];
-	// 	if (doc.changed && doc != curDoc) {
-	// 		files.push({type: "full", name: doc.name, text: doc.doc.getValue()});
-	// 		doc.changed = null;
-	// 	}
-	// }
 	var fileName = sublimeGetFileNameFromView(view);
 	query.file = fileName;
 	if (view.is_dirty()) {
@@ -211,11 +151,6 @@ function buildRequest(view, query, allowFragments) {
 			text: sublimeViewContents(view)
 		});
 	}
-	// files.push({
-	// 	name: fileName,
-	// 	type: 'full',
-	// 	text: sublimeReadFile(fileName)
-	// });
 
 	return {
 		request: {
@@ -227,7 +162,6 @@ function buildRequest(view, query, allowFragments) {
 }
 
 function ternHints(view, projectId, callback) {
-	log('Get hints for ' + projectId);
 	var req = buildRequest(view, "completions");
 	// log(JSON.stringify(req));
 	var res = null;
@@ -238,7 +172,6 @@ function ternHints(view, projectId, callback) {
 	}
 
 	server.request(req.request, function(error, data) {
-		log('Resp: ' + error);
 		if (error) {
 			throw error;
 		}

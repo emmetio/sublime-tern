@@ -1,10 +1,6 @@
 [
 	{
-		"caption": "TernJS: Show Hints",
-		"command": "tern_show_hints"
-	},
-	{
-		"caption": "TernJS: Get projects",
-		"command": "tern_get_projects"
+		"caption": "TernJS: Reload",
+		"command": "ternjs_reload"
 	}
 ]
