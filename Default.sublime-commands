@@ -2,5 +2,9 @@
 	{
 		"caption": "TernJS: Reload",
 		"command": "ternjs_reload"
+	}, 
+	{
+		"caption": "TernJS: Jump to definition",
+		"command": "ternjs_jump_to_definition"
 	}
 ]

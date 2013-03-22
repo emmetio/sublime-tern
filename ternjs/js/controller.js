@@ -197,3 +197,23 @@ function ternHints(view, projectId, callback) {
 
 	return res;
 }
+
+
+function ternJumpToDefinition(view, projectId) {
+	var req = buildRequest(view, "definition", false);
+	var server = ternServers[projectId];
+	if (!server) {
+		log('No sutable server for project "' + projectId + '"');
+		return null;
+	}
+
+	var res = null;
+	server.request(req.request, function(error, data) {
+		if (error) {
+			throw error;
+		}
+
+		res = data;
+	});
+	return res;
+}

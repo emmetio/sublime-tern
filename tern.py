@@ -24,6 +24,8 @@ from ternjs.context import js_file_reader as _js_file_reader
 # JS context
 ctx = None
 
+_jump_def = None
+
 icons = {
 	'object':  '{}',
 	'array':   '[]',
@@ -71,7 +73,7 @@ def init():
 	)
 
 	ctx.js()
-	sync_projects()
+	sync_all_projects()
 
 
 def file_name_from_view(view):
@@ -204,9 +206,22 @@ def reload_ternjs():
 	project.reset_cache()
 	sync_all_projects()
 
+def apply_jump_def(view, dfn=None):
+	if not dfn:
+		dfn = _jump_def
+
+	if not dfn: return
+
+	if dfn['file'] == file_name_from_view(view):
+		view.sel().clear()
+		view.sel().add(sublime.Region(dfn['start'], dfn['end']));
+
+	globals()['_jump_def'] = None
+
 class JSRegistry(sublime_plugin.EventListener):
 	def on_load(self, view):
 		if is_js_view(view):
+			apply_jump_def(view)
 			p = project.project_for_view(view)
 			if p:
 				sync_project(p)
@@ -245,6 +260,28 @@ class JSRegistry(sublime_plugin.EventListener):
 class TernjsReload(sublime_plugin.TextCommand):
 	def run(self, edit, **kw):
 		reload_ternjs()
+
+class TernjsJumpToDefinition(sublime_plugin.TextCommand):
+	def run(self, edit, **kw):
+		if not can_run(): return
+		view = active_view()
+
+		proj = project.project_for_view(view) or {}
+		dfn = ctx.js().locals.ternJumpToDefinition(view, proj.get('id', 'empty'))
+		if dfn:
+			target_file = dfn['file']
+			if target_file != file_name_from_view(view):
+				target_view = view.window().open_file(target_file)
+
+				if not target_view.is_loading():
+					apply_jump_def(target_view, dfn)
+				else:
+					globals()['_jump_def'] = dfn
+					return
+			else:
+				apply_jump_def(view, dfn)
+
+
 
 def plugin_loaded():
 	sublime.set_timeout(init, 200)
