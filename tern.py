@@ -135,22 +135,40 @@ def completion_hint(t):
 	else:
 		suffix = 'object'
 
-	return icons[suffix]
+	return icons.get(suffix, suffix)
 
 
 def completion_item(item):
 	"Returns ST completion representation for given Tern one"
 	t = item['type']
 	label = item['text']
+	value = item['text']
 	m = re.match(r'fn\((.*)\)', t)
 	if m:
 		fn_def = m.group(1) or ''
 		args = [p.split(':')[0].strip() for p in fn_def.split(',')]
 		label += '(%s)' % ', '.join(args)
+
+		# split args into mandatory and optional lists
+		opt_pos = len(args)
+		for i, a in enumerate(args):
+			if a and a[-1] == '?':
+				opt_pos = i
+				break
+
+		mn_args = args[0:opt_pos]
+		opt_args = args[opt_pos:]
+		value += '(' + ', '.join(['${%d:%s}' % (i + 1, v) for i, v in enumerate(mn_args)])
+		if opt_args:
+			offset = len(mn_args)
+			opt_args_str = ', '.join(['${%d:%s}' % (offset + i + 2, v[:-1]) for i, v in enumerate(opt_args)])
+			value += '${%d:, %s}' % (offset + 1, opt_args_str)
+
+		value += ')'
 	else:
 		label += '\t%s' % completion_hint(t)
 
-	return (label, item['text'])
+	return (label, value)
 
 def all_projects():
 	proj = copy(project.all_projects())
@@ -343,7 +361,7 @@ class TernjsCommitRename(sublime_plugin.TextCommand):
 
 
 def plugin_loaded():
-	sublime.set_timeout(init, 200)
+	init()
 
 if not is_st3():
 	sublime.set_timeout(init, 200)

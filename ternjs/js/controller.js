@@ -96,7 +96,7 @@ function syncFiles(server, files) {
 }
 
 function getFile(file, callback) {
-	log('Requesting file ' + file);
+	// log('Requesting file ' + file);
 	var content = sublimeReadFile(file);
 	// if (!/(underscore)\.js$/.test(file)) {
 	// 	content = sublimeReadFile(file);
@@ -182,7 +182,6 @@ function sendRequest(request, projectId) {
 
 function ternHints(view, projectId, callback) {
 	var req = buildRequest(view, "completions");
-	// log(JSON.stringify(req));
 	var res = sendRequest(req.request, projectId);
 	if (res) {
 		var completions = _.map(res.completions, function(completion) {
