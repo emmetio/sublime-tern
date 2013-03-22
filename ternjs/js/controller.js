@@ -6,22 +6,19 @@
 var ternServers = {};
 var ternDocs = [];
 
-function startServer(project, defLibs) {
+function startServer(project, libs) {
 	if (_.isString(project)) {
 		project = JSON.parse(project);
 	}
+
+	libs = _.toArray(libs)
 	
-	log('Staring TernJS server for ' + project.id);
+	log('Staring TernJS server for ' + project.id + ' with ' + libs.length + ' libs');
 	
 	if (!(project.id in ternServers)) {
-		var mapLibs = function(v, k) {
+		var env = _.map(libs || [], function(v, k) {
 			return _.isString(v) ? JSON.parse(v) : v;
-		};
-
-		var env = _.map(defLibs || [], mapLibs);
-		if (project.libs) {
-			env = env.concat(_.map(project.libs, mapLibs));
-		}
+		});
 
 		ternServers[project.id] = new tern.Server({
 			getFile: getFile, 
@@ -69,7 +66,7 @@ function syncFiles(server, files) {
 function getFile(file, callback) {
 	log('Requesting file ' + file);
 	var content = '';
-	if (!/(handlebars|underscore)\.js$/.test(file)) {
+	if (!/(underscore)\.js$/.test(file)) {
 		content = sublimeReadFile(file);
 	}
 	return callback(null, content);

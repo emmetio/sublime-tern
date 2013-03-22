@@ -8,19 +8,20 @@ import gc
 import imp
 import re
 
-BASE_PATH = os.path.abspath(os.path.dirname(__file__))
+
 is_python3 = sys.version_info[0] > 2
 
-core_files = ['js/bootstrap.js', 'js/lodash.js', 
+BASE_PATH = os.path.abspath(os.path.dirname(__file__))
+LIBS_PATH = os.path.join(BASE_PATH, 'libs')
+TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json']
+
+# Default libraries that should be loaded for every project
+DEFAULT_LIBS = ['ecma5']
+
+TERNJS_FILES = ['js/bootstrap.js', 'js/lodash.js', 
 			  'js/acorn.js', 'js/acorn_loose.js', 'js/walk.js', 
 			  'js/tern.js', 'js/env.js', 'js/jsdoc.js', 
 			  'js/infer.js', 'js/controller.js']
-
-tern_env = {
-	'ecma5':   'libs/ecma5.json',
-	'browser': 'libs/browser.json',
-	'jquery':  'libs/jquery.json'
-}
 
 def should_use_unicode():
 	"""
@@ -114,7 +115,7 @@ class Context():
 
 		# detect reader encoding
 		self._use_unicode = None
-		self._core_files = [] + core_files + files
+		self._core_files = [] + TERNJS_FILES + files
 		self.default_libs = self._create_env()
 
 	def log(self, message):
@@ -123,12 +124,12 @@ class Context():
 
 	def _create_env(self):
 		"Creates environment for TernJS server"
-		print('Creating env')
-		env = {}
-		for k, v in tern_env.items():
-			env[k] = self.read_js_file(make_path(v))
+		libs = {}
+		for file_name in TERNJS_LIBS:
+			name, ext = os.path.splitext(file_name)
+			libs[name] = self.read_js_file(os.path.join(LIBS_PATH, file_name))
 
-		return env
+		return libs
 
 	def js(self):
 		"Returns JS context"

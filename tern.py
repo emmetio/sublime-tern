@@ -3,6 +3,7 @@ import os.path
 import imp
 import re
 import json
+from copy import copy
 
 import sublime, sublime_plugin
 
@@ -17,8 +18,8 @@ import ternjs.reloader
 
 import ternjs.pyv8loader as pyv8loader
 import ternjs.project as project
+import ternjs.context as ternjs
 from ternjs.context import js_file_reader as _js_file_reader
-from ternjs.context import Context
 
 # JS context
 ctx = None
@@ -67,7 +68,7 @@ def init():
 		'sublimeViewContents': view_contents
 	}
 
-	globals()['ctx'] = Context(
+	globals()['ctx'] = ternjs.Context(
 		reader=js_file_reader,
 		contrib=contrib
 	)
@@ -158,9 +159,31 @@ def sync_projects():
 	if not ctx or not ctx.js(): return
 
 	for p in all_projects():
+		config = p.get('config', {})
+		# collect libraries for current project
+		libs = copy(ternjs.DEFAULT_LIBS);
+		for l in config.get('libs', []):
+			if l not in libs:
+				libs.append(l)
+
+		# resolve all libraries
+		resolved_libs = []
+		project_dir = os.path.dirname(p['id'])
+		for l in libs:
+			if l in ctx.default_libs:
+				resolved_libs.append(ctx.default_libs[l])
+			else:
+				# it's not a predefined library, try lo read it from disk
+				lib_path = l
+				if not os.path.isabs(lib_path):
+					lib_path = os.path.normpath(os.path.join(project_dir, lib_path))
+
+				if os.path.isfile(lib_path):
+					resolved_libs.append(_js_file_reader(lib_path))
+
 		# pass data as JSON string to ensure that all
 		# data types are valid
-		ctx.js().locals.startServer(json.dumps(p, ensure_ascii=False), ctx.default_libs)
+		ctx.js().locals.startServer(json.dumps(p, ensure_ascii=False), resolved_libs)
 
 def project_for_view(view):
 	file_name = view.file_name()
