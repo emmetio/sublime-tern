@@ -24,6 +24,9 @@ from ternjs.context import js_file_reader as _js_file_reader
 # JS context
 ctx = None
 
+# Default ST settings
+user_settings = None
+
 _jump_def = None
 _rename_session = None
 
@@ -43,6 +46,8 @@ def is_st3():
 	return sublime.version()[0] == '3'
 
 def init():
+	globals()['user_settings'] = sublime.load_settings('Preferences.sublime-settings')
+	
 	# setup environment for PyV8 loading
 	pyv8_paths = [
 		os.path.join(PACKAGES_PATH, 'PyV8'),
@@ -70,14 +75,71 @@ def init():
 		'sublimeViewContents': view_contents
 	}
 
+	delegate = SublimeLoaderDelegate()
 	globals()['ctx'] = ternjs.Context(
 		reader=js_file_reader,
-		contrib=contrib
+		contrib=contrib,
+		logger=delegate.log
 	)
 
-	ctx.js()
-	sync_all_projects()
+	pyv8loader.load(pyv8_paths[1], delegate) 
 
+	if can_run():
+		sync_all_projects()
+
+class SublimeLoaderDelegate(pyv8loader.LoaderDelegate):
+	def __init__(self, settings=None):
+		if settings is None:
+			settings = {}
+			for k in ['http_proxy', 'https_proxy', 'timeout']:
+				if user_settings.has(k):
+					settings[k] = user_settings.get(k, None)
+
+		pyv8loader.LoaderDelegate.__init__(self, settings)
+		self.state = None
+		self.message = 'Loading PyV8 binary, please wait'
+		self.i = 0
+		self.addend = 1
+		self.size = 8
+
+	def on_start(self, *args, **kwargs):
+		self.state = 'loading'
+
+	def on_progress(self, *args, **kwargs):
+		before = self.i % self.size
+		after = (self.size - 1) - before
+		msg = '%s [%s=%s]' % (self.message, ' ' * before, ' ' * after)
+		if not after:
+			self.addend = -1
+		if not before:
+			self.addend = 1
+		self.i += self.addend
+
+		sublime.set_timeout(lambda: sublime.status_message(msg), 0)
+
+	def on_complete(self, *args, **kwargs):
+		self.state = 'complete'
+		def _c():
+			sublime.status_message('PyV8 binary successfully loaded')
+			if can_run():
+				sync_all_projects()
+
+		sublime.set_timeout(_c, 0)
+
+	def on_error(self, exit_code=-1, thread=None):
+		self.state = 'error'
+		sublime.set_timeout(lambda: show_pyv8_error(exit_code), 0)
+
+	def setting(self, name, default=None):
+		"Returns specified setting name"
+		return self.settings.get(name, default)
+
+	def log(self, message):
+		print('TernJS: %s' % message)
+
+def show_pyv8_error(exit_code):
+	if 'PyV8' not in sys.modules:
+		sublime.error_message('Error while loading PyV8 binary: exit code %s \nTry to manually install PyV8 from\nhttps://github.com/emmetio/pyv8-binaries' % exit_code)
 
 def file_name_from_view(view):
 	name = view.file_name()
@@ -99,17 +161,18 @@ def view_contents(view):
 
 def js_file_reader(file_path, use_unicode=True):
 	if hasattr(sublime, 'load_resource'):
-		rel_path = file_path
+		rel_path = None
 		for prefix in [sublime.packages_path(), sublime.installed_packages_path()]:
-			if rel_path.startswith(prefix):
-				rel_path = os.path.join('Packages', rel_path[len(prefix) + 1:])
+			if file_path.startswith(prefix):
+				rel_path = os.path.join('Packages', file_path[len(prefix) + 1:])
 				break
 
-		rel_path = rel_path.replace('.sublime-package', '')
-		# for Windows we have to replace slashes
-		# print('Loading %s' % rel_path)
-		rel_path = rel_path.replace('\\', '/')
-		return sublime.load_resource(rel_path)
+		if rel_path:
+			rel_path = rel_path.replace('.sublime-package', '')
+			# for Windows we have to replace slashes
+			# print('Loading %s' % rel_path)
+			rel_path = rel_path.replace('\\', '/')
+			return sublime.load_resource(rel_path)
 
 	return _js_file_reader(file_path, use_unicode)
 
@@ -265,6 +328,8 @@ class TernJSEventListener(sublime_plugin.EventListener):
 
 
 	def on_query_completions(self, view, prefix, locations):
+		if not can_run(): return []
+
 		if not is_js_view(view) or view.get_regions(rename_region_key):
 			return []
 
