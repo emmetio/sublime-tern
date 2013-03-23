@@ -47,7 +47,7 @@ def is_st3():
 
 def init():
 	globals()['user_settings'] = sublime.load_settings('Preferences.sublime-settings')
-	
+
 	# setup environment for PyV8 loading
 	pyv8_paths = [
 		os.path.join(PACKAGES_PATH, 'PyV8'),
@@ -57,20 +57,8 @@ def init():
 
 	sys.path += pyv8_paths
 
-	def file_reader(f):
-		if f[0] == '{' and f[-1] == '}':
-			# it's unsaved file, locate it 
-			buf_id = f[1:-1]
-			view = view_for_buffer_id(buf_id)
-			if view:
-				return view.substr(sublime.Region(0, view.size()))
-			else:
-				return ''
-
-		return _js_file_reader(f, True)
-
 	contrib = {
-		'sublimeReadFile': file_reader,
+		'sublimeReadFile': ternjs_file_reader,
 		'sublimeGetFileNameFromView': file_name_from_view,
 		'sublimeViewContents': view_contents
 	}
@@ -140,6 +128,41 @@ class SublimeLoaderDelegate(pyv8loader.LoaderDelegate):
 def show_pyv8_error(exit_code):
 	if 'PyV8' not in sys.modules:
 		sublime.error_message('Error while loading PyV8 binary: exit code %s \nTry to manually install PyV8 from\nhttps://github.com/emmetio/pyv8-binaries' % exit_code)
+
+def ternjs_file_reader(f, proj=None):
+	if f[0] == '{' and f[-1] == '}':
+		# it's unsaved file, locate it 
+		buf_id = f[1:-1]
+		view = view_for_buffer_id(buf_id)
+		if view:
+			return view.substr(sublime.Region(0, view.size()))
+		else:
+			return ''
+
+	file_path = f
+	if not os.path.exists(file_path) and proj and proj['config']:
+		# Unable to find file, it might be a RequireJS module.
+		# If project contains "path" option, iterate on it
+		proj_path = os.path.dirname(proj['id'])
+		config = proj['config']
+		if file_path[0] == '/':
+			file_path = file_path[1:]
+
+		paths = config['paths'] or []
+		for p in paths:
+			if not os.path.isabs(p):
+				p = os.path.join(proj_path, p)
+
+			target_path = os.path.join(p, file_path)
+			if os.path.exists(target_path):
+				file_path = target_path
+				break
+
+	try:
+		return _js_file_reader(file_path, True)
+	except Exception as e:
+		print(e)
+		return None
 
 def file_name_from_view(view):
 	name = view.file_name()
@@ -311,6 +334,11 @@ class TernJSEventListener(sublime_plugin.EventListener):
 				sync_project(p)
 
 	def on_post_save(self, view):
+		file_name = view.file_name()
+		if file_name and file_name.endswith('.sublime-project'):
+			# Project file was updated, re-scan all projects
+			return reload_ternjs()
+
 		if is_js_view(view):
 			p = project.project_for_view(view)
 			if p:
@@ -320,11 +348,6 @@ class TernJSEventListener(sublime_plugin.EventListener):
 				reset_project(p)
 				sync_project(p)
 			return
-
-		file_name = view.file_name()
-		if file_name and file_name.endswith('.sublime-project'):
-			# Project file was updated, re-scan all projects
-			reload_ternjs()
 
 
 	def on_query_completions(self, view, prefix, locations):

@@ -13,7 +13,7 @@ is_python3 = sys.version_info[0] > 2
 
 BASE_PATH = os.path.abspath(os.path.dirname(__file__))
 LIBS_PATH = os.path.join(BASE_PATH, 'libs')
-TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json']
+TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json', 'requirejs.json']
 
 # Default libraries that should be loaded for every project
 DEFAULT_LIBS = ['ecma5']
@@ -21,7 +21,7 @@ DEFAULT_LIBS = ['ecma5']
 TERNJS_FILES = ['js/bootstrap.js', 'js/lodash.js', 
 			  'js/acorn.js', 'js/acorn_loose.js', 'js/walk.js', 
 			  'js/tern.js', 'js/env.js', 'js/jsdoc.js', 
-			  'js/infer.js', 'js/controller.js']
+			  'js/infer.js', 'js/requirejs.js', 'js/controller.js']
 
 def should_use_unicode():
 	"""

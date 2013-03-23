@@ -21,7 +21,9 @@ function startServer(project, libs) {
 		});
 
 		ternServers[project.id] = new tern.Server({
-			getFile: getFile, 
+			getFile: function(name, callback) {
+				return getFile(name, project, callback);
+			}, 
 			environment: env, 
 			debug: true
 		});
@@ -95,12 +97,13 @@ function syncFiles(server, files) {
 	return toAdd.length || toRemove.length;
 }
 
-function getFile(file, callback) {
+function getFile(file, project, callback) {
 	// log('Requesting file ' + file);
-	var content = sublimeReadFile(file);
-	// if (!/(underscore)\.js$/.test(file)) {
-	// 	content = sublimeReadFile(file);
-	// }
+	var content = sublimeReadFile(file, project);
+	if (content === null) {
+		return callback('Unable to read file');
+	}
+	
 	return callback(null, content);
 }
 
