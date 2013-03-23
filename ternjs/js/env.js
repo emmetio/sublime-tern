@@ -22,7 +22,9 @@
   }
 
   var TypeParser = exports.TypeParser = function(spec, start, base) {
-    this.pos = start || 0; this.spec = spec; this.base = base;
+    this.pos = start || 0;
+    this.spec = spec;
+    this.base = base;
   };
   TypeParser.prototype = {
     eat: function(str) {
@@ -140,11 +142,10 @@
   }
 
   function parseType(spec, name, base) {
-    var withCallbacks = /^\*fn\(/.test(spec) && (spec = spec.slice(1));
     var type = new TypeParser(spec, null, base).parseType(name, true);
-    if (withCallbacks) for (var i = 0; i < type.args.length; ++i) (function(i) {
+    if (/^fn\(/.test(spec)) for (var i = 0; i < type.args.length; ++i) (function(i) {
       var arg = type.args[i];
-      if (arg instanceof infer.Fn) addEffect(type, function(_self, fArgs) {
+      if (arg instanceof infer.Fn && arg.args.length) addEffect(type, function(_self, fArgs) {
         var fArg = fArgs[i];
         if (fArg) fArg.propagate(new infer.IsCallee(infer.cx().topScope, arg.args));
       });
@@ -192,7 +193,7 @@
         var from = getFrom(self, args), to = getTo(self, args);
         from.forAllProps(function(prop, val, local) {
           if (local && prop != "<i>")
-            to.propagate(new PropHasSubset(prop, val));
+            to.propagate(new infer.PropHasSubset(prop, val));
         });
       });
     } else {
@@ -200,14 +201,16 @@
     }
   }
 
-  function parsePath(path) {
+  var currentTopScope;
+
+  var parsePath = exports.parsePath = function(path) {
     var cx = infer.cx(), cached = cx.paths[path];
     if (cached != null) return cached;
     cx.paths[path] = infer.ANull;
 
     var isdate = /^Date.prototype/.test(path);
     var parts = path.split(".");
-    var base = cx.topScope;
+    var base = currentTopScope || cx.topScope;
     for (var i = 0; i < parts.length && base != infer.ANull; ++i) {
       var prop = parts[i];
       if (prop.charAt(0) == "!") {
@@ -232,9 +235,11 @@
           base = propVal.types[0];
       }
     }
+    // Uncomment this to get feedback on your poorly written .json files
+    // if (base == infer.ANull) console.log("bad path: " + path + " (" + cx.curOrigin + ")");
     cx.paths[path] = base == infer.ANull ? null : base;
     return base;
-  }
+  };
 
   function emptyObj(ctor) {
     var empty = Object.create(ctor.prototype);
@@ -247,7 +252,7 @@
     if (!base) {
       var tp = spec["!type"];
       if (tp) {
-        if (/^\*?fn\(/.test(tp)) base = emptyObj(infer.Fn);
+        if (/^fn\(/.test(tp)) base = emptyObj(infer.Fn);
         else if (tp.charAt(0) == "[") base = emptyObj(infer.Arr);
         else throw new Error("Invalid !type spec: " + tp);
       } else if (spec["!stdProto"]) {
@@ -257,7 +262,7 @@
       }
       base.name = path;
     }
-    
+
     for (var name in spec) if (hop(spec, name) && name.charCodeAt(0) != 33) {
       var inner = spec[name];
       if (typeof inner == "string") continue;
@@ -294,34 +299,37 @@
     }
   }
 
-  function parseDef(spec, path) {
-    var base, tp = spec["!type"];
-    if (tp) {
-      base = parseType(tp, path);
-    } else {
-      var proto = spec["!proto"];
-      base = new infer.Obj(proto ? parseType(proto) : true, path);
-    }
-    passTwo(base, spec, path);
-    return base;
-  }
-
-  exports.loadEnvironment = function(data) {
+  function doLoadEnvironment(data, scope) {
     var cx = infer.cx();
 
     infer.addOrigin(cx.curOrigin = data["!name"] || "env#" + cx.origins.length);
     cx.loading = data;
     cx.localDefs = Object.create(null);
 
-    passOne(cx.topScope, data);
+    passOne(scope, data);
 
     var def = data["!define"];
-    if (def) for (var name in def)
-      cx.localDefs[name] = parseDef(def[name], name);
+    if (def) {
+      for (var name in def)
+        cx.localDefs[name] = passOne(null, def[name], name);
+      for (var name in def)
+        passTwo(cx.localDefs[name], def[name]);
+    }
 
-    passTwo(cx.topScope, data);
+    passTwo(scope, data);
 
     cx.curOrigin = cx.loading = cx.localDefs = null;
+  }
+
+  exports.loadEnvironment = function(data, scope) {
+    if (!scope) scope = infer.cx().topScope;
+    var oldScope = currentTopScope;
+    currentTopScope = scope;
+    try {
+      doLoadEnvironment(data, scope);
+    } finally {
+      currentTopScope = oldScope;
+    }
   };
 
   // Used to register custom logic for more involved effect or type

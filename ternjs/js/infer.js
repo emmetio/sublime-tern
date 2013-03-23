@@ -23,8 +23,8 @@
   "use strict";
 
   // Delayed initialization because of cyclic dependencies.
-  env = env.init({}, exports);
-  jsdoc = jsdoc.init({}, exports);
+  env = exports.env = env.init({}, exports);
+  jsdoc = exports.jsdoc = jsdoc.init({}, exports);
 
   var toString = exports.toString = function(type, maxDepth) {
     return type ? type.toString(maxDepth) : "?";
@@ -43,13 +43,16 @@
       if (this.types.indexOf(type) > -1) return;
 
       this.types.push(type);
-      if (this.forward) for (var i = 0; i < this.forward.length; ++i)
+      if (this.forward) for (var i = 0, maxLen = this.forward.length + 10;
+                             i < this.forward.length && i < maxLen; ++i)
         this.forward[i].addType(type);
     },
 
     propagate: function(c) {
+      if (c == ANull || (c instanceof Type)) return;
       (this.forward || (this.forward = [])).push(c);
-      for (var i = 0; i < this.types.length; ++i)
+      for (var i = 0, maxLen = this.types.length + 10;
+           i < this.types.length && i < maxLen; ++i)
         c.addType(this.types[i]);
     },
 
@@ -71,8 +74,7 @@
     },
     isEmpty: function() { return this.types.length == 0; },
     getFunctionType: function() {
-      // FIXME find most complete one?
-      for (var i = 0; i < this.types.length; ++i)
+      for (var i = this.types.length - 1; i >= 0; --i)
         if (this.types[i] instanceof Fn) return this.types[i];
     },
 
@@ -83,11 +85,10 @@
     },
 
     makeupType: function() {
-      guessing = true;
       if (!this.forward) return null;
-      for (var i = 0; i < this.forward.length; ++i) {
+      for (var i = this.forward.length - 1; i >= 0; --i) {
         var fw = this.forward[i], hint = fw.typeHint && fw.typeHint();
-        if (hint && !hint.isEmpty()) return hint;
+        if (hint && !hint.isEmpty()) {guessing = true; return hint;}
       }
 
       var props = Object.create(null), foundProp = null;
@@ -115,16 +116,17 @@
           }
           matches.push(obj);
         }
-        return canonicalType(matches);
+        var canon = canonicalType(matches);
+        if (canon) {guessing = true; return canon;}
       }
     },
 
     typeHint: function() { return this.types.length ? this.getType() : null; },
     propagatesTo: function() { return this; },
 
-    gatherProperties: function(prefix, out) {
+    gatherProperties: function(f, depth) {
       for (var i = 0; i < this.types.length; ++i)
-        this.types[i].gatherProperties(prefix, out);
+        this.types[i].gatherProperties(f, depth);
     }
   };
 
@@ -154,9 +156,7 @@
         for (var j = 0; j < tp.args.length; ++j) if (!tp.args[j].isEmpty()) ++score;
         if (!tp.retval.isEmpty()) ++score;
       } else if (objs) {
-        score = tp.name ? 100 : 1;
-        // FIXME this heuristic is far-fetched.
-        for (var prop in tp.props) if (tp.props[prop].flags & flag_definite) ++score;
+        score = tp.name ? 100 : 2;
         for (var o = tp; o; o = o.proto) if (o.provisionary) {
           score = 1;
           break;
@@ -164,7 +164,7 @@
       } else if (prims) {
         score = 1;
       }
-      if (score > maxScore) { maxScore = score; maxTp = tp; }
+      if (score >= maxScore) { maxScore = score; maxTp = tp; }
     }
     return maxTp;
   }
@@ -198,7 +198,7 @@
     }
   };
 
-  function PropHasSubset(prop, target) {
+  var PropHasSubset = exports.PropHasSubset = function(prop, target) {
     this.target = target; this.prop = prop;
   }
   PropHasSubset.prototype = {
@@ -221,7 +221,6 @@
   IsCallee.prototype = {
     addType: function(fn) {
       if (!(fn instanceof Fn)) return;
-      if (!fn.args) console.log("escaped: ", fn.info);
       for (var i = 0, e = Math.min(this.args.length, fn.args.length); i < e; ++i)
         this.args[i].propagate(fn.args[i]);
       this.self.propagate(fn.self);
@@ -301,8 +300,8 @@
   Prim.prototype = Object.create(Type.prototype);
   Prim.prototype.toString = function() { return this.name; };
   Prim.prototype.getProp = function(prop) {return this.proto.props[prop] || ANull;};
-  Prim.prototype.gatherProperties = function(prefix, out) {
-    if (this.proto) this.proto.gatherProperties(prefix, out);
+  Prim.prototype.gatherProperties = function(f, depth) {
+    if (this.proto) this.proto.gatherProperties(f, depth);
   };
 
   var flag_initializer = exports.flag_initializer = 1;
@@ -376,23 +375,10 @@
       this.broadcastProp(prop, val, false);
     }
   };
-  Obj.prototype.gatherProperties = function(prefix, out) {
-    // 'hasOwnProperty' and such are usually just noise, leave them
-    // out when no prefix is provided.
-    if (this == cx.protos.Object && !prefix) return;
-
-    outer: for (var prop in this.props) {
-      if (prefix && prop.indexOf(prefix) != 0 || prop == "<i>") continue;
-      for (var i = 0; i < out.length; ++i) if (out[i].name == prop) continue outer;
-      var val = this.props[prop];
-      if (!(val.flags & flag_definite)) continue;
-      var oldGuessing = guessing;
-      guessing = false;
-      var type = toString(val.getType());
-      out.push({name: prop, type: type, guess: guessing});
-      guessing = oldGuessing;
-    }
-    if (this.proto) this.proto.gatherProperties(prefix, out);
+  Obj.prototype.gatherProperties = function(f, depth) {
+    for (var prop in this.props) if (prop != "<i>")
+      f(prop, this, depth);
+    if (this.proto) this.proto.gatherProperties(f, depth + 1);
   };
   Obj.prototype.forAllProps = function(c) {
     (this.onNewProp || (this.onNewProp = [])).push(c);
@@ -502,7 +488,6 @@
     this.paths = Object.create(null);
 
     exports.withContext(this, function() {
-      cx.curOrigin = "ecma5";
       cx.protos.Object = new Obj(null, "Object.prototype");
       cx.topScope = new Scope();
       cx.protos.Array = new Obj(true, "Array.prototype");
@@ -537,10 +522,10 @@
 
   // SCOPES
 
-  function Scope(prev) {
+  var Scope = exports.Scope = function(prev) {
     this.prev = prev;
     Obj.call(this, prev || true);
-  }
+  };
   Scope.prototype = Object.create(Obj.prototype);
   Scope.prototype.getVar = function(name, define) {
     for (var s = this; ; s = s.proto) {
@@ -899,7 +884,7 @@
     Expression: function(node, scope, c) {
       infer(node, scope, c, ANull);
     },
-    
+
     FunctionDeclaration: function(node, scope, c) {
       var inner = node.body.scope, fn = inner.fnType;
       c(node.body, scope, "ScopeBody");
@@ -1103,25 +1088,11 @@
   // a type or set of completions.
   var guessing = false;
 
-  exports.resetGuessing = function() { guessing = false; };
+  exports.resetGuessing = function(val) { guessing = val; };
   exports.didGuess = function() { return guessing; };
 
-  function compareProps(a, b) {
-    var aUp = /^[A-Z]/.test(a.name), bUp = /^[A-Z]/.test(b.name);
-    if (aUp == bUp) return a.name < b.name ? -1 : a.name == b.name ? 0 : 1;
-    else return aUp ? 1 : -1;
-  }
-
-  exports.propertiesOf = function(type, prefix) {
-    var props = [];
-    type.gatherProperties(prefix, props);
-    if (!props.length && prefix.length >= 2) {
-      guessing = true;
-      for (var prop in cx.props) if (prop.indexOf(prefix) == 0)
-        props.push({name: prop, type: "?", guess: true});
-    }
-    props.sort(compareProps);
-    return props;
+  exports.forAllPropertiesOf = function(type, f) {
+    type.gatherProperties(f, 0);
   };
 
   var refFindWalker = walk.make({}, searchVisitor);
@@ -1145,10 +1116,8 @@
     else return defaultScope || cx.topScope;
   };
 
-  exports.localsAt = function(ast, pos, prefix) {
-    var scope = scopeAt(ast, pos), locals = [];
-    scope.gatherProperties(prefix, locals);
-    locals.sort(compareProps);
-    return locals;
+  exports.forAllLocalsAt = function(ast, pos, defaultScope, f) {
+    var scope = scopeAt(ast, pos, defaultScope), locals = [];
+    scope.gatherProperties(f, 0);
   };
 });

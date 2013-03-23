@@ -22,7 +22,7 @@ function startServer(project, libs) {
 
 		ternServers[project.id] = new tern.Server({
 			getFile: function(name, callback) {
-				return getFile(name, project, callback);
+				return sublimeReadFile(name, project) || '';
 			}, 
 			environment: env, 
 			debug: true
@@ -99,12 +99,9 @@ function syncFiles(server, files) {
 
 function getFile(file, project, callback) {
 	// log('Requesting file ' + file);
-	var content = sublimeReadFile(file, project);
-	if (content === null) {
-		return callback('Unable to read file');
-	}
-	
-	return callback(null, content);
+	return sublimeReadFile(file, project) || '';
+	// callback(null, content);
+	// return content;
 }
 
 /**
@@ -179,12 +176,12 @@ function sendRequest(request, projectId) {
 
 		res = data;
 	});
-
+	
 	return res;
 }
 
 function ternHints(view, projectId, callback) {
-	var req = buildRequest(view, "completions");
+	var req = buildRequest(view, {type: "completions", types: true});
 	var res = sendRequest(req.request, projectId);
 	if (res) {
 		var completions = _.map(res.completions, function(completion) {
