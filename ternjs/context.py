@@ -146,34 +146,30 @@ class Context():
 
 			if self._use_unicode is None:
 				self._use_unicode = should_use_unicode()
-
-			glue = u'\n' if self._use_unicode else '\n'
-			core_src = [self.read_js_file(make_path(f)) for f in self._core_files]
 			
 			self._ctx = PyV8.JSContext()
 			self._ctx.enter()
-			self._ctx.eval(glue.join(core_src))
 
-			def file_reader(f):
-				return self.read_js_file(make_path(f))
+			for f in self._core_files:
+				self._ctx.eval(self.read_js_file(make_path(f)), name=f, line=0, col=0)
 
 			# expose some methods
 			self._ctx.locals.log = js_log
-			# self._ctx.locals.sublimeReadFile = file_reader
 
 			if self._contrib:
 				for k in self._contrib:
 					self._ctx.locals[k] = self._contrib[k]
 
-			# start server
-			# env = self._create_env()
-			# self._ctx.locals.startServer(env)
+		else:
+			self._ctx.enter()
 
 		return self._ctx
 
 	def reset(self):
 		"Resets JS execution context"
 		if self._ctx:
+			# self._isolate.leave()
+			self._ctx.enter()
 			self._ctx.leave()
 			self._ctx = None
 			try:
