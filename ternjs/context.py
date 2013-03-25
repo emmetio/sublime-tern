@@ -13,9 +13,7 @@ is_python3 = sys.version_info[0] > 2
 
 BASE_PATH = os.path.abspath(os.path.dirname(__file__))
 LIBS_PATH = os.path.join(BASE_PATH, 'defs')
-TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json'
-			   # ,'requirejs.json', 'node.json'
-			   ]
+TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json']
 
 # Default libraries that should be loaded for every project
 DEFAULT_LIBS = ['ecma5']
@@ -23,7 +21,6 @@ DEFAULT_LIBS = ['ecma5']
 TERNJS_FILES = ['js/bootstrap.js', 
 			  'js/acorn.js', 'js/acorn_loose.js', 'js/walk.js', 
 			  'js/tern.js', 'js/env.js', 'js/jsdoc.js', 'js/infer.js', 
-			  # 'js/requirejs.js', 'js/node.js', 
 			  'js/lodash.js', 'js/controller.js']
 
 try:
@@ -163,8 +160,11 @@ class Context():
 
 			if self._use_unicode is None:
 				self._use_unicode = should_use_unicode()
+
+			class Global():
+				isTernJS = True
 			
-			self._ctx = PyV8.JSContext()
+			self._ctx = PyV8.JSContext(Global())
 			self._ctx.enter()
 
 			for f in self._core_files:
@@ -178,7 +178,8 @@ class Context():
 				for k in self._contrib:
 					self._ctx.locals[k] = self._contrib[k]
 
-		else:
+		if not hasattr(self._ctx.locals, 'isTernJS'):
+			print('Should enter context')
 			self._ctx.enter()
 
 		return self._ctx

@@ -3,6 +3,7 @@ import os.path
 import imp
 import re
 import json
+import threading
 from copy import copy
 
 import sublime, sublime_plugin
@@ -131,6 +132,7 @@ def show_pyv8_error(exit_code):
 		sublime.error_message('Error while loading PyV8 binary: exit code %s \nTry to manually install PyV8 from\nhttps://github.com/emmetio/pyv8-binaries' % exit_code)
 
 def ternjs_file_reader(f, proj=None):
+	# print('request file %s' % f)
 	if f[0] == '{' and f[-1] == '}':
 		# it's unsaved file, locate it 
 		buf_id = f[1:-1]
@@ -145,15 +147,21 @@ def ternjs_file_reader(f, proj=None):
 		# Unable to find file, it might be a RequireJS module.
 		# If project contains "path" option, iterate on it
 		proj_path = os.path.dirname(proj['id'])
-		config = proj['config']
 		if file_path[0] == '/':
 			file_path = file_path[1:]
 
-		paths = config.get('paths', [])
-		for p in paths:
-			if not os.path.isabs(p):
-				p = os.path.join(proj_path, p)
 
+		lookup_paths = [proj_path]
+
+		config = proj['config']
+		if hasattr(config, 'paths'):
+			for p in config['paths']:
+				if not os.path.isabs(p):
+					p = os.path.join(proj_path, p)
+				lookup_paths.append(p)
+
+
+		for p in lookup_paths:
 			target_path = os.path.join(p, file_path)
 			if os.path.exists(target_path):
 				file_path = target_path
@@ -293,8 +301,22 @@ def sync_project(p):
 	# data types are valid
 	ctx.js().locals.startServer(json.dumps(p, ensure_ascii=False), resolved_libs)
 
+class ProjectSyncThread(threading.Thread):
+	def __init__(self, projects):
+		self.projects = projects
+		threading.Thread.__init__(self)
+
+	def run(self):
+		print('Start syncing')
+		for p in self.projects:
+			sync_project(p)
+
+
 def sync_all_projects():
 	if not can_run(): return
+
+	# thread = ProjectSyncThread(all_projects())
+	# thread.start()
 
 	for p in all_projects():
 		sync_project(p)

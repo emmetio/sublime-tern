@@ -95,6 +95,10 @@ class TernPlugin():
 		defs_path = os.path.join(os.path.dirname(self.path), '%s.json' % self.id)
 		try:
 			self.definitions = read_file(defs_path)
+			parsed_defs = json.loads(self.definitions)
+			if '!plugin' in parsed_defs:
+				self.id = parsed_defs['!plugin']
+
 		except Exception as e:
 			pass
 

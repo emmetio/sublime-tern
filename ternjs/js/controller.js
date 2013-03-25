@@ -12,8 +12,9 @@ function startServer(project, libs) {
 	}
 
 	libs = _.toArray(libs)
+	var files = project && project.files ? project.files : [];
 	
-	log('Staring TernJS server for ' + project.id + ' with ' + libs.length + ' libs');
+	log('Staring TernJS server for ' + project.id + ' with ' + libs.length + ' libs and ' + files.length + ' files');
 	
 	if (!(project.id in ternServers)) {
 		var makeDef = function(v) {
@@ -32,9 +33,7 @@ function startServer(project, libs) {
 						env.push(makeDef(plugin.definitions));
 					}
 
-					if (plugin.config) {
-						pluginOptions['' + plugin.id] = plugin.config;
-					}
+					pluginOptions['' + plugin.id] = plugin.config || {};
 				}
 			});
 		};
