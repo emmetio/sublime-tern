@@ -16,16 +16,38 @@ function startServer(project, libs) {
 	log('Staring TernJS server for ' + project.id + ' with ' + libs.length + ' libs');
 	
 	if (!(project.id in ternServers)) {
-		var env = _.map(libs || [], function(v, k) {
+		var makeDef = function(v) {
 			return _.isString(v) ? JSON.parse(v) : v;
-		});
+		};
+
+		var env = _.map(libs || [], makeDef);
+		var pluginOptions = {};
+
+		if (project.config && project.config.plugins) {
+			_.each(project.config.plugins, function(data, name) {
+				data = _.extend({pluginId: name}, data);
+				var plugin = loadPlugin(JSON.stringify(data), project);
+				if (plugin) {
+					if (plugin.definitions) {
+						env.push(makeDef(plugin.definitions));
+					}
+
+					if (plugin.config) {
+						pluginOptions['' + plugin.id] = plugin.config;
+					}
+				}
+			});
+		};
 
 		ternServers[project.id] = new tern.Server({
 			getFile: function(name, callback) {
+				// log('Requesting file ' + name);
 				return sublimeReadFile(name, project) || '';
 			}, 
-			environment: env, 
-			debug: true
+			environment: env,
+			pluginOptions: pluginOptions,
+			debug: true,
+			async: false
 		});
 	}
 

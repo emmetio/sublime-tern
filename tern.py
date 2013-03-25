@@ -17,6 +17,7 @@ if 'ternjs.reloader' in sys.modules:
 import ternjs.reloader
 
 import ternjs.pyv8loader as pyv8loader
+import ternjs.tern_plugin as plugin
 import ternjs.project as project
 import ternjs.context as ternjs
 from ternjs.context import js_file_reader as _js_file_reader
@@ -148,7 +149,7 @@ def ternjs_file_reader(f, proj=None):
 		if file_path[0] == '/':
 			file_path = file_path[1:]
 
-		paths = config['paths'] or []
+		paths = config.get('paths', [])
 		for p in paths:
 			if not os.path.isabs(p):
 				p = os.path.join(proj_path, p)

@@ -7,13 +7,15 @@ import json
 import gc
 import imp
 import re
-
+import tern_plugin
 
 is_python3 = sys.version_info[0] > 2
 
 BASE_PATH = os.path.abspath(os.path.dirname(__file__))
-LIBS_PATH = os.path.join(BASE_PATH, 'libs')
-TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json', 'requirejs.json', 'node.json']
+LIBS_PATH = os.path.join(BASE_PATH, 'defs')
+TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json'
+			   # ,'requirejs.json', 'node.json'
+			   ]
 
 # Default libraries that should be loaded for every project
 DEFAULT_LIBS = ['ecma5']
@@ -21,8 +23,16 @@ DEFAULT_LIBS = ['ecma5']
 TERNJS_FILES = ['js/bootstrap.js', 
 			  'js/acorn.js', 'js/acorn_loose.js', 'js/walk.js', 
 			  'js/tern.js', 'js/env.js', 'js/jsdoc.js', 'js/infer.js', 
-			  'js/requirejs.js', 'js/node.js', 
+			  # 'js/requirejs.js', 'js/node.js', 
 			  'js/lodash.js', 'js/controller.js']
+
+try:
+	isinstance("", basestring)
+	def isstr(s):
+		return isinstance(s, basestring)
+except NameError:
+	def isstr(s):
+		return isinstance(s, str)
 
 def should_use_unicode():
 	"""
@@ -132,6 +142,13 @@ class Context():
 
 		return libs
 
+	def load_plugin(self, p, project=None):
+		"""
+		Loads and initiates TernJS plugin. Returns additional defs 
+		that plugin requires to operate properly
+		"""
+		return tern_plugin.get_plugin(p, self, project)
+
 	def js(self):
 		"Returns JS context"
 		if not self._ctx:
@@ -151,10 +168,11 @@ class Context():
 			self._ctx.enter()
 
 			for f in self._core_files:
-				self._ctx.eval(self.read_js_file(make_path(f)), name=f, line=0, col=0)
+				self.eval_js_file(f)
 
 			# expose some methods
 			self._ctx.locals.log = js_log
+			self._ctx.locals.loadPlugin = self.load_plugin
 
 			if self._contrib:
 				for k in self._contrib:
@@ -179,11 +197,13 @@ class Context():
 				pass
 
 
-	def read_js_file(self, file_path):
-		return self.reader(file_path, self._use_unicode)
+	def read_js_file(self, file_path, resolve_path=False):
+		full_path = make_path(file_path) if resolve_path else file_path
+		return self.reader(full_path, self._use_unicode)
 
 	def eval(self, source):
 		self.js().eval(source)
 
-	def eval_js_file(self, file_path):
-		self.eval(self.read_js_file(file_path))
+	def eval_js_file(self, file_path, resolve_path=True):
+		self.js().eval(self.read_js_file(file_path, resolve_path), name=file_path, line=0, col=0)
+

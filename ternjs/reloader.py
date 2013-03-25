@@ -11,6 +11,7 @@ for mod in sys.modules:
 		reload_mods.append(mod)
 
 mods_load_order = [
+	'ternjs.tern_plugin',
 	'ternjs.pyv8loader',
 	'ternjs.context',
 	'ternjs.formic',
