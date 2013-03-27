@@ -241,7 +241,8 @@ def sanitize_func_def(fn):
 	m = re.match(r'fn\(', fn)
 	if not m: return None
 
-	args_str = fn[3:-1]
+	args_str = re.sub(r'->\s*[^\)]*$', '', fn).strip()
+	args_str = args_str[3:-1]
 	sanitized_args = ''
 	i = 0
 	ln = len(args_str)
