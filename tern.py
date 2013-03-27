@@ -370,11 +370,12 @@ class TernJSEventListener(sublime_plugin.EventListener):
 		if is_js_view(view):
 			p = project.project_for_view(view)
 			if p:
+				sublime.set_timeout(lambda: ctx.js().locals.forceFileUpdate(view, p['id']))
 				# currently, there's no easy way to push
 				# updated JS file to existing TernJS server
 				# so we have to kill it first and then start again
-				reset_project(p)
-				sync_project(p)
+				# reset_project(p)
+				# sync_project(p)
 			return
 
 

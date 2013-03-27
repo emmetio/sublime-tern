@@ -55,22 +55,30 @@ function startServer(project, libs) {
 			// server was updated. Initiate a fake request 
 			// to make sure that first completions request won't take
 			// too much time
-			var fakeRequest = {
-				query: {
-					type: 'completions',
-					end: 0,
-					file: '{empty}'
-				},
-				files: [{
-					name: '{empty}',
-					type: 'full',
-					text: ''
-				}]
-			};
-
-			ternServers[project.id].request(fakeRequest, function() {});
+			var req = buildFakeRequest();
+			ternServers[project.id].request(req, function() {});
 		}
 	}
+}
+
+/**
+ * Builds fake request to TernJS server to reload
+ * files state
+ * @param  {Object} project Project info
+ */
+function buildFakeRequest() {
+	return fakeRequest = {
+		query: {
+			type: 'completions',
+			end: 0,
+			file: '{empty}'
+		},
+		files: [{
+			name: '{empty}',
+			type: 'full',
+			text: ''
+		}]
+	};
 }
 
 function killServer(project) {
@@ -198,6 +206,16 @@ function sendRequest(request, projectId) {
 	});
 	
 	return res;
+}
+
+function forceFileUpdate(view, projectId) {
+	var req = buildFakeRequest();
+	req.files.push({
+		name: sublimeGetFileNameFromView(view),
+		type: 'full',
+		text: sublimeViewContents(view)
+	});
+	ternServers[projectId].request(req, function() {});
 }
 
 function ternHints(view, projectId, callback) {
