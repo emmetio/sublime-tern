@@ -232,15 +232,55 @@ def completion_hint(t):
 
 	return icons.get(suffix, suffix)
 
+def sanitize_func_def(fn):
+	"""
+	Parses function definition from given completion.
+	The function might be quite complex, something like this:
+	fn(arg1 : str, arg2 : fn(arg3 : str, arg4 : str))
+	"""
+	m = re.match(r'fn\(', fn)
+	if not m: return None
+
+	args_str = fn[3:-1]
+	sanitized_args = ''
+	i = 0
+	ln = len(args_str)
+	braces_stack = 0
+
+	while i < ln:
+		ch = args_str[i]
+		if ch == '(':
+			braces_stack += 1
+			j = i + 1
+			while j < ln:
+				ch2 = args_str[j]
+				if ch2 == '(':
+					braces_stack += 1
+				elif ch2 == ')':
+					braces_stack -= 1
+
+				if braces_stack == 0:
+					break
+
+				j += 1
+
+			i = j
+		else:
+			sanitized_args += ch
+		
+		i += 1
+
+	return sanitized_args
+
+
 
 def completion_item(item):
 	"Returns ST completion representation for given Tern one"
 	t = item['type']
 	label = item['text']
 	value = item['text']
-	m = re.match(r'fn\((.*)\)', t)
-	if m:
-		fn_def = m.group(1) or ''
+	fn_def = sanitize_func_def(t)
+	if fn_def is not None:
 		args = [p.split(':')[0].strip() for p in fn_def.split(',')]
 		label += '(%s)' % ', '.join(args)
 
