@@ -348,6 +348,11 @@ def apply_jump_def(view, dfn=None):
 
 	globals()['_jump_def'] = None
 
+def completions_allowed(view):
+	"Check if TernJS completions allowed for given view"
+	caret_pos = view.sel()[0].begin()
+	return view.score_selector(caret_pos, 'source.js - string - comment') > 0
+
 class TernJSEventListener(sublime_plugin.EventListener):
 	def on_load(self, view):
 		if is_js_view(view):
@@ -376,7 +381,7 @@ class TernJSEventListener(sublime_plugin.EventListener):
 	def on_query_completions(self, view, prefix, locations):
 		if not can_run(): return []
 
-		if not is_js_view(view) or view.get_regions(rename_region_key):
+		if not completions_allowed(view) or view.get_regions(rename_region_key):
 			return []
 
 		proj = project.project_for_view(view) or {}
@@ -384,7 +389,7 @@ class TernJSEventListener(sublime_plugin.EventListener):
 		if completions and hasattr(completions, 'list'):
 			cmpl = [completion_item(c) for c in completions['list']]
 			# print(cmpl)
-			return cmpl
+			return (cmpl, sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS)
 
 
 		return []
