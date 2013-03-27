@@ -385,7 +385,9 @@ def apply_jump_def(view, dfn=None):
 
 	if dfn['file'] == file_name_from_view(view):
 		view.sel().clear()
-		view.sel().add(sublime.Region(dfn['start'], dfn['end']));
+		r = sublime.Region(dfn['start'], dfn['end'])
+		view.sel().add(r);
+		view.show(r)
 
 	globals()['_jump_def'] = None
 
@@ -412,11 +414,6 @@ class TernJSEventListener(sublime_plugin.EventListener):
 			p = project.project_for_view(view)
 			if p:
 				sublime.set_timeout(lambda: ctx.js().locals.forceFileUpdate(view, p['id']))
-				# currently, there's no easy way to push
-				# updated JS file to existing TernJS server
-				# so we have to kill it first and then start again
-				# reset_project(p)
-				# sync_project(p)
 			return
 
 
