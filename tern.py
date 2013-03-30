@@ -59,6 +59,10 @@ def init():
 
 	sys.path += pyv8_paths
 
+	# unpack recently loaded binary, is exists
+	for p in pyv8_paths:
+		pyv8loader.unpack_pyv8(p)
+
 	contrib = {
 		'sublimeReadFile': ternjs_file_reader,
 		'sublimeGetFileNameFromView': file_name_from_view,
@@ -96,6 +100,9 @@ class SublimeLoaderDelegate(pyv8loader.LoaderDelegate):
 		self.state = 'loading'
 
 	def on_progress(self, *args, **kwargs):
+		if kwargs['progress'].is_background:
+			return
+			
 		before = self.i % self.size
 		after = (self.size - 1) - before
 		msg = '%s [%s=%s]' % (self.message, ' ' * before, ' ' * after)
