@@ -116,18 +116,18 @@ def all_projects(no_cache=False):
 	if _cache and not no_cache:
 		return _cache
 
-	projects = projects_from_opened_files()
-	result = []
-	for p in projects:
-		config = get_ternjs_config(p)
-		result.append({
-			'id': p,
-			'config': config,
-			'files': get_ternjs_files(p, config)
-		})
+	result = [info(p) for p in projects_from_opened_files()]
 
 	globals()['_cache'] = result
 	return result
+
+def info(project_id):
+	config = get_ternjs_config(project_id)
+	return {
+		'id': project_id,
+		'config': config,
+		'files': get_ternjs_files(project_id, config)
+	}
 
 def project_for_view(view):
 	"Returns project info for given view"
@@ -154,7 +154,7 @@ def project_for_view(view):
 
 	# file is not inside any known project: it might be a new file
 	# check if it matches project patterns
-	for p in all_projects():
+	for p in projects:
 		files = get_ternjs_files(p)
 		if file_name in files:
 			p['files'] = files
@@ -164,4 +164,26 @@ def project_for_view(view):
 
 def reset_cache():
 	globals()['_cache'] = None
+
+def in_cache(project_id):
+	"Check if given project is in cache"
+	if _cache:
+		if isinstance(project_id, dict):
+			project_id = project_id.get('id')
+
+		for p in _cache:
+			if p['id'] == project_id:
+				return True
+
+	return False
+
+def add_to_cache(project_id):
+	if isinstance(project_id, dict):
+		project_id = project_id.get('id')
+
+	if not in_cache(project_id):
+		if not _cache:
+			globals()['_cache'] = []
+
+		globals()['_cache'].append(info(project_id))
 

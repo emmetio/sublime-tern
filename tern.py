@@ -262,14 +262,9 @@ def sanitize_func_def(fn):
 			j = i + 1
 			while j < ln:
 				ch2 = args_str[j]
-				if ch2 == '(':
-					braces_stack += 1
-				elif ch2 == ')':
-					braces_stack -= 1
-
-				if braces_stack == 0:
-					break
-
+				if   ch2 == '(': braces_stack += 1
+				elif ch2 == ')': braces_stack -= 1
+				if braces_stack == 0: break
 				j += 1
 
 			i = j
@@ -318,8 +313,11 @@ def all_projects():
 	proj.append({'id': 'empty'})
 	return proj
 
-def sync_project(p):
+def sync_project(p, check_exists=False):
 	if not can_run(): return
+
+	if check_exists and ctx.js().locals.hasServer(p['id']):
+		return
 
 	print('Syncing project %s' % p['id'])
 
@@ -392,9 +390,9 @@ def apply_jump_def(view, dfn=None):
 
 	if dfn['file'] == file_name_from_view(view):
 		view.sel().clear()
-		r = sublime.Region(dfn['start'], dfn['end'])
+		r = sublime.Region(int(dfn['start']), int(dfn['end']))
 		view.sel().add(r);
-		view.show(r)
+		sublime.set_timeout(lambda: view.show(view.sel()), 1)
 
 	globals()['_jump_def'] = None
 
@@ -409,7 +407,7 @@ class TernJSEventListener(sublime_plugin.EventListener):
 			apply_jump_def(view)
 			p = project.project_for_view(view)
 			if p:
-				sync_project(p)
+				sync_project(p, True)
 
 	def on_post_save(self, view):
 		file_name = view.file_name()
@@ -425,10 +423,8 @@ class TernJSEventListener(sublime_plugin.EventListener):
 
 
 	def on_query_completions(self, view, prefix, locations):
-		if not can_run(): return []
-
-		if not completions_allowed(view) or view.get_regions(rename_region_key):
-			return []
+		if not can_run() or not completions_allowed(view) or view.get_regions(rename_region_key):
+			return None
 
 		proj = project.project_for_view(view) or {}
 		completions = ctx.js().locals.ternHints(view, proj.get('id', 'empty'))
@@ -438,7 +434,7 @@ class TernJSEventListener(sublime_plugin.EventListener):
 			return (cmpl, sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS)
 
 
-		return []
+		return None
 
 	def on_query_context(self, view, key, op, operand, match_all):
 		if key == 'ternjs.rename':
@@ -463,6 +459,12 @@ class TernjsJumpToDefinition(sublime_plugin.TextCommand):
 		dfn = ctx.js().locals.ternJumpToDefinition(view, proj.get('id', 'empty'))
 		if dfn:
 			target_file = dfn['file']
+
+			# resolve target file
+			if not os.path.isabs(target_file) and proj.get('id', 'empty')  != 'empty':
+				target_file = os.path.join(os.path.dirname(proj['id']), target_file)
+				dfn['file'] = target_file
+
 			if target_file != file_name_from_view(view):
 				target_view = view.window().open_file(target_file)
 

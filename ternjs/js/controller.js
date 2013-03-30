@@ -44,7 +44,7 @@ function startServer(project, libs) {
 			}, 
 			environment: env,
 			pluginOptions: pluginOptions,
-			debug: true,
+			debug: false,
 			async: false
 		});
 	}
@@ -94,6 +94,10 @@ function killAllServers() {
 	_.each(ternServers, function(server, id) {
 		killServer(id);
 	});
+}
+
+function hasServer(id) {
+	return id in ternServers;
 }
 
 /**

@@ -4,8 +4,6 @@
 // project, and defines an interface for querying the code in the
 // project.
 
-// FIXME there are re-entrancy problems in this.
-
 (function(mod) {
   if (typeof exports == "object" && typeof module == "object") // CommonJS
     return mod(exports, require("./infer"));
@@ -23,7 +21,8 @@
     async: false,
     getFile: function(_f, c) { if (this.async) c(null, null); },
     environment: [],
-    pluginOptions: {}
+    pluginOptions: {},
+    fetchTimeout: 1000
   };
 
   var queryTypes = {
@@ -54,19 +53,32 @@
 
   exports.defineQueryType = function(name, desc) { queryTypes[name] = desc; };
 
+  function File(name) {
+    this.name = name;
+    this.scope = this.text = this.ast = this.lineOffsets = null;
+  }
+  function updateText(file, text) {
+    file.text = text;
+    file.ast = infer.parse(text);
+    file.lineOffsets = null;
+  }
+
   var Server = exports.Server = function(options) {
     this.cx = null;
     this.options = options || {};
     for (var o in defaultOptions) if (!options.hasOwnProperty(o))
       options[o] = defaultOptions[o];
-    this.environment = [];
-    this.filesToLoad = [];
-    this.handlers = {};
 
-    this.pendingFiles = [];
-    this.files = this.uses = 0;
+    this.environment = [];
+    this.handlers = {};
+    this.files = [];
+    this.uses = 0;
+    this.fetchingFiles = 0;
+    this.asyncError = null;
+
     for (var i = 0; i < options.environment.length; ++i)
       this.addEnvironment(options.environment[i]);
+    this.reset();
   };
   Server.prototype = {
     addEnvironment: function(data) {
@@ -75,44 +87,40 @@
       if (plugin && plugin in plugins)
         plugins[plugin](this, this.options.pluginOptions[plugin]);
     },
-    addFile: function(file) {
-      if (this.filesToLoad.indexOf(file) < 0) this.filesToLoad.push(file);
+    addFile: function(name, /*optional*/ text) {
+      ensureFile(this, name, text);
     },
-    delFile: function(file) {
-      var found = this.filesToLoad.indexOf(file);
-      if (found > -1) this.filesToLoad.splice(found, 1);
+    delFile: function(name) {
+      for (var i = 0, f; i < this.files.length; ++i) if ((f = this.files[i]).name == name) {
+        clearFile(this, f);
+        this.files.splice(i--, 1);
+        return;
+      }
     },
     reset: function() {
       this.cx = new infer.Context(this.environment, this);
       this.uses = 0;
-      this.files = [];
-      this.pendingFiles = this.filesToLoad.slice(0);
+      for (var i = 0; i < this.files.length; ++i) clearFile(this, this.files[i]);
       this.signal("reset");
     },
 
-    // Used from inside the analyzer to load, for example, a
-    // `require`-d file.
-    require: function(filename) {
-      this.pendingFiles.push(filename);
-    },
-
     request: function(doc, c) {
-      if (!validDoc(doc, c)) return;
+      var inv = invalidDoc(doc);
+      if (inv) return c(inv);
 
       var self = this, files = doc.files || [];
-      if (!this.cx) this.reset();
       doRequest(this, doc, function(err, data) {
         c(err, data);
         // FIXME better heuristic for when to reset
-        if (++self.cx.uses > 20) {
+        if (++self.uses > 20) {
           self.reset();
-          finishPending(self, function(){});
+          analyzeAll(self, function(){});
         }
       });
     },
 
     findFile: function(name) {
-      return this.files && findFile(this.files, name);
+      return findFile(this.files, name);
     },
 
     on: function(type, f) {
@@ -130,78 +138,143 @@
   };
 
   function doRequest(srv, doc, c) {
-    if (!queryTypes.hasOwnProperty(doc.query.type))
+    if (doc.query && !queryTypes.hasOwnProperty(doc.query.type))
       return c("No query type '" + doc.query.type + "' defined");
 
     var files = doc.files || [];
     for (var i = 0; i < files.length; ++i) {
       var file = files[i];
-      if (file.type == "full") loadFile(srv, file.name, file.text);
+      ensureFile(srv, file.name, file.type == "full" ? file.text : null)
     }
 
-    var queryType = queryTypes[doc.query.type];
-
-    function finishReq(err, file) {
-      if (err) return c(err);
-      if (queryType.fullFile && file.type == "part")
-        return("Can't run a " + doc.query.type + " query on a file fragment");
-
-      finishPending(srv, function(err) {
-        if (err) return c(err);
-        infer.withContext(srv.cx, function() {
-          var result;
-          try {
-            result = queryType.run(srv, doc.query, file);
-          } catch (e) {
-            if (srv.options.debug) console.log(e.stack);
-            return c(e.message || String(e));
-          }
-          c(null, result);
-        });
-      });
+    var query = doc.query;
+    if (!query) {
+      c(null, {});
+      analyzeAll(srv, function(){});
+      return;
     }
 
+    var queryType = queryTypes[query.type];
     if (queryType.takesFile) {
-      if (typeof doc.query.file != "string") return c(".query.file must be a string");
-      resolveFile(srv, files, doc.query.file, finishReq);
+      if (typeof query.file != "string") return c(".query.file must be a string");
+      if (!/^#/.test(query.file)) ensureFile(srv, query.file);
+    }
+
+    analyzeAll(srv, function(err) {
+      if (err) return c(err);
+      var file = queryType.takesFile && resolveFile(srv, files, query.file);
+      if (queryType.fullFile && file.type == "part")
+        return("Can't run a " + query.type + " query on a file fragment");
+
+      infer.withContext(srv.cx, function() {
+        var result;
+        try {
+          result = queryType.run(srv, query, file);
+        } catch (e) {
+          if (srv.options.debug) console.log(e.stack);
+          return c(e);
+        }
+        c(null, result);
+      });
+    });
+  }
+
+  var depth = 0;
+  function analyzeFile(srv, file) {
+    if (depth) console.trace("calling inside");
+    ++depth;
+    infer.withContext(srv.cx, function() {
+      file.scope = srv.cx.topScope;
+      srv.signal("beforeLoad", file);
+      infer.markVariablesDefinedBy(file.scope, file.name);
+      infer.analyze(file.ast, file.name, file.scope);
+      infer.purgeMarkedVariables(file.scope);
+      srv.signal("afterLoad", file);
+    });
+    --depth;
+    return file;
+  }
+
+  function ensureFile(srv, name, text) {
+    var known = findFile(srv.files, name);
+    if (known) {
+      if (text) clearFile(srv, known, text);
+      return;
+    }
+
+    var file = new File(name);
+    srv.files.push(file);
+    if (text) {
+      updateText(file, text)
+    } else if (srv.options.async) {
+      ++srv.fetchingFiles;
+      srv.options.getFile(name, function(err, text) {
+        if (err) srv.asyncError = err;
+        updateText(file, text || "");
+        if (--srv.fetchingFiles == 0) srv.signal("everythingFetched");
+      });
     } else {
-      finishReq(null, null);
+      updateText(file, srv.options.getFile(name));
     }
   }
 
-  function loadFile(srv, filename, text) {
-    return infer.withContext(srv.cx, function() {
-      var file = {name: filename, text: text || "", scope: srv.cx.topScope};
-      srv.signal("beforeLoad", file);
-      var result = infer.analyze(file.text, filename, file.scope);
-      var known = findFile(srv.files, filename);
-      if (!known) srv.files.push(known = {name: filename});
-      known.text = file.text;
-      known.lineOffsets = null;
-      known.ast = result.ast;
-      known.scope = file.scope;
-      srv.signal("afterLoad", known);
-      return known;
-    });
+  function clearFile(srv, file, newText) {
+    if (file.scope) {
+      // FIXME try to batch purges into a single pass (each call needs
+      // to traverse the whole graph)
+      infer.withContext(srv.cx, function() {
+        infer.purgeTypes(file.name);
+      });
+      file.scope = null;
+    }
+    if (newText != null) updateText(file, newText);
   }
 
-  function getFile(srv, file, c) {
-    if (srv.options.async) return srv.options.getFile(file, c);
-    try { c(null, srv.options.getFile(file)); }
-    catch(e) { c(e); }
+  function fetchAll(srv, c) {
+    var done = true, returned = false;
+    for (var i = 0; i < srv.files.length; ++i) {
+      var file = srv.files[i];
+      if (file.text != null) continue;
+      if (srv.options.async) {
+        done = false;
+        srv.options.getFile(file.name, function(err, text) {
+          if (err && !returned) { returned = true; return c(err); }
+          updateText(file, text || "");
+          fetchAll(srv, c);
+        });
+      } else {
+        try {
+          updateText(file, srv.options.getFile(file.name) || "");
+        } catch (e) { return c(e); }
+      }
+    }
+    if (done) c();
   }
 
-  function finishPending(srv, c) {
-    var next;
-    while (next = srv.pendingFiles.pop())
-      if (!findFile(srv.files, next)) break;
-    if (!next) return c();
+  function waitOnFetch(srv, c) {
+    var done = function() {
+      srv.off("everythingFetched", done);
+      clearTimeout(timeout);
+      analyzeAll(srv, c);
+    }
+    srv.on("everythingFetched", done);
+    var timeout = setTimeout(done, srv.options.fetchTimeout);
+  }
 
-    getFile(srv, next, function(err, text) {
-      if (err) return c(err);
-      loadFile(srv, next, text);
-      finishPending(srv, c);
-    });
+  function analyzeAll(srv, c) {
+    if (srv.fetchingFiles) return waitForFiles(srv, c);
+
+    var e = srv.fetchError;
+    if (e) { srv.fetchError = null; return c(e); }
+
+    var done = true;
+    for (var i = 0; i < srv.files.length; ++i) {
+      var file = srv.files[i];
+      if (file.text == null) done = false;
+      else if (file.scope == null) analyzeFile(srv, file);
+    }
+    if (done) c();
+    else waitOnFetch(srv, c);
   }
 
   function findFile(arr, name) {
@@ -229,63 +302,53 @@
     return closest;
   }
 
-  function resolveFile(srv, localFiles, name, c) {
-    var file, isRef = name.match(/^#(\d+)$/);
-    if (!isRef) {
-      file = findFile(srv.files, name);
-      if (!file) return getFile(srv, name, function(err, text) {
-        if (err) return c(err);
-        c(null, loadFile(srv, name, text));
-      });
-      return c(null, file);
-    }
+  function resolveFile(srv, localFiles, name) {
+    var isRef = name.match(/^#(\d+)$/);
+    if (!isRef) return findFile(srv.files, name);
 
-    file = localFiles[isRef[1]];
-    if (!file) c("Reference to unknown file " + name);
+    var file = localFiles[isRef[1]];
+    if (!file) throw new Error("Reference to unknown file " + name);
+    if (file.type == "full") return findFile(srv.files, file.name);
 
-    if (file.type == "full") {
-      file = findFile(srv.files, file.name);
-    } else { // Partial file
-      var realFile = findFile(srv.files, file.name);
-      if (!realFile)
-        return getFile(srv, file.name, function(err, text) {
-          if (err) return c(err);
-          loadFile(srv, file.name, text);
-          resolveFile(srv, localFiles, name, c);
-        });
+    // This is a partial file
 
-      var offset = file.offset != null ? file.offset : findLineStart(file, file.offsetLine) || 0;
-      var line = firstLine(file.text);
-      var foundPos = findMatchingPosition(line, realFile.text, offset);
-      var pos = foundPos == null ? Math.max(0, realFile.text.lastIndexOf("\n", offset)) : foundPos;
+    var realFile = findFile(srv.files, file.name);
+    var offset = file.offset != null ? file.offset : findLineStart(file, file.offsetLine) || 0;
+    var line = firstLine(file.text);
+    var foundPos = findMatchingPosition(line, realFile.text, offset);
+    var pos = foundPos == null ? Math.max(0, realFile.text.lastIndexOf("\n", offset)) : foundPos;
 
-      infer.withContext(srv.cx, function() {
-        var scope = file.scope = infer.scopeAt(realFile.ast, pos, realFile.scope), text = file.text, m;
-        if (foundPos && (m = line.match(/^(.*?)\bfunction\b/))) {
-          var cut = m[1].length, white = "";
-          for (var i = 0; i < cut; ++i) white += " ";
-          text = white + text.slice(cut);
+    infer.withContext(srv.cx, function() {
+      infer.purgeTypes(file.name, pos, pos + file.text.length);
+
+      var text = file.text, m;
+      if (foundPos && (m = line.match(/^(.*?)\bfunction\b/))) {
+        var cut = m[1].length, white = "";
+        for (var i = 0; i < cut; ++i) white += " ";
+        text = white + text.slice(cut);
+      }
+      var scope = file.scope = infer.scopeAt(realFile.ast, pos, realFile.scope);
+      infer.markVariablesDefinedBy(scope, file.name, pos, pos + file.text.length);
+      file.ast = infer.parse(file.text);
+      infer.analyze(file.ast, file.name, scope);
+      infer.purgeMarkedVariables(scope);
+
+      // This is a kludge to tie together the function types (if any)
+      // outside and inside of the fragment, so that arguments and
+      // return values have some information known about them.
+      var inner = infer.scopeAt(realFile.ast, pos + line.length, realFile.scope);
+      if (m && inner != scope && inner.fnType) {
+        var newInner = infer.scopeAt(file.ast, line.length, scope);
+        var fOld = inner.fnType, fNew = newInner.fnType;
+        if (fNew && (fNew.name == fOld.name || !fOld.name)) {
+          for (var i = 0, e = Math.min(fOld.args.length, fNew.args.length); i < e; ++i)
+            fOld.args[i].propagate(fNew.args[i]);
+          fOld.self.propagate(fNew.self);
+          fNew.retval.propagate(fOld.retval);
         }
-        file.ast = infer.analyze(file.text, file.name, scope).ast;
-        file.scope = scope;
-
-        // This is a kludge to tie together the function types (if any)
-        // outside and inside of the fragment, so that arguments and
-        // return values have some information known about them.
-        var inner = infer.scopeAt(realFile.ast, pos + line.length, realFile.scope);
-        if (m && inner != scope && inner.fnType) {
-          var newInner = infer.scopeAt(file.ast, line.length, scope);
-          var fOld = inner.fnType, fNew = newInner.fnType;
-          if (fNew && (fNew.name == fOld.name || !fOld.name)) {
-            for (var i = 0, e = Math.min(fOld.args.length, fNew.args.length); i < e; ++i)
-              fOld.args[i].propagate(fNew.args[i]);
-            fOld.self.propagate(fNew.self);
-            fNew.retval.propagate(fOld.retval);
-          }
-        }
-      });
-    }
-    c(null, file);
+      }
+    });
+    return file;
   }
 
   function isPosition(val) {
@@ -294,27 +357,25 @@
   }
 
   // Baseline query document validation
-  function validDoc(doc, c) {
-    var err;
-    if (!doc.query) err = "Missing query property";
-    else if (typeof doc.query.type != "string") err = ".query.type must be a string";
-    else if (doc.query.start && !isPosition(doc.query.start)) err = ".query.start must be a number";
-    else if (doc.query.end && !isPosition(doc.query.end)) err = ".query.end must be a number";
-    else if (doc.files) {
-      if (!Array.isArray(doc.files)) err = "Files property must be an array";
-      for (var i = 0; i < doc.files.length && !err; ++i) {
+  function invalidDoc(doc) {
+    if (doc.query) {
+      if (typeof doc.query.type != "string") return ".query.type must be a string";
+      if (doc.query.start && !isPosition(doc.query.start)) return ".query.start must be a number";
+      if (doc.query.end && !isPosition(doc.query.end)) return ".query.end must be a number";
+    }
+    if (doc.files) {
+      if (!Array.isArray(doc.files)) return "Files property must be an array";
+      for (var i = 0; i < doc.files.length; ++i) {
         var file = doc.files[i];
-        if (typeof file != "object") err = ".files[n] must be objects";
-        else if (typeof file.text != "string") err = ".files[n].text must be a string";
-        else if (typeof file.name != "string") err = ".files[n].name must be a string";
+        if (typeof file != "object") return ".files[n] must be objects";
+        else if (typeof file.text != "string") return ".files[n].text must be a string";
+        else if (typeof file.name != "string") return ".files[n].name must be a string";
         else if (file.type == "part") {
           if (typeof file.offset != "number" && typeof file.offsetLines != "number")
-            err = ".files[n].offset or .files[n].offsetLines must be a number";
-        } else if (file.type != "full") err = ".files[n].type must be \"full\" or \"part\"";
+            return ".files[n].offset or .files[n].offsetLines must be a number";
+        } else if (file.type != "full") return ".files[n].type must be \"full\" or \"part\"";
       }
     }
-    if (err) c(err);
-    else return true;
   }
 
   var offsetSkipLines = 25;
@@ -385,10 +446,9 @@
     function gather(prop, obj, depth) {
       // 'hasOwnProperty' and such are usually just noise, leave them
       // out when no prefix is provided.
-      if (!query.dontOmitObjectPrototype && obj == srv.cx.protos.Object && !word) return;
-      if (word && prop.indexOf(word) != 0) return;
+      if (query.omitObjectPrototype !== false && obj == srv.cx.protos.Object && !word) return;
+      if (query.filter !== false && word && prop.indexOf(word) != 0) return;
       var val = obj.props[prop];
-      if (!(val.flags & infer.flag_definite)) return;
       for (var i = 0; i < completions.length; ++i) {
         var c = completions[i];
         if ((wrapAsObjs ? c.name : c) == prop) return;
@@ -411,13 +471,13 @@
       var tp = infer.expressionType(memberExpr);
       if (tp) infer.forAllPropertiesOf(tp, gather);
 
-      if (!completions.length && word.length >= 2 && !query.dontGuess)
+      if (!completions.length && word.length >= 2 && query.guess !== false)
         for (var prop in srv.cx.props) gather(prop, srv.cx.props[prop][0], 0);
     } else {
       infer.forAllLocalsAt(file.ast, wordStart, file.scope, gather);
     }
 
-    if (!query.dontSort) completions.sort(compareCompletions);
+    if (query.sort !== false) completions.sort(compareCompletions);
 
     return {start: outputPos(query, file, wordStart),
             end: outputPos(query, file, wordEnd),
@@ -463,7 +523,7 @@
   function findDef(srv, query, file) {
     var expr = findExpr(file, query), def, fileName, guess = false;
     if (expr.node.type == "Identifier") {
-      var found = expr.state.findVar(expr.node.name);
+      var found = expr.state.hasProp(expr.node.name);
       if (found && typeof found.name == "object") {
         def = found.name;
         fileName = found.origin;
