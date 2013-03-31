@@ -9,9 +9,9 @@ This plugin adds TernJS support into Sublime Text editor.
 Sublime Tern can be installed as any other plugin with [Package Control](http://wbond.net/sublime_packages/package_control):
 
 1. In ST editor, call “Install Package” command from Command Palette.
-2. Find “TernJS” in plugins list and hit Enter to install it.
+2. Find “Sublime Tern” in plugins list and hit Enter to install it.
 
-When installed, TernJS will automatically download PyV8 binary required to run this plugin. If you experience issues with PyV8 loader, you can [install it manually](https://github.com/emmetio/pyv8-binaries#readme).
+When installed, Sublime Tern will automatically download PyV8 binary required to run this plugin. If you experience issues with PyV8 loader, you can [install it manually](https://github.com/emmetio/pyv8-binaries#readme).
 
 *Warning*: if you have [Emmet](http://emmet.io/) plugin installed and using Sublime Text 2, you have to make sure you have the latest PyV8 binary. It must be automatically updated within 24 hours (you need to restart ST2 editor), but you can forcibly update it:
 
