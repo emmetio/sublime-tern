@@ -431,7 +431,7 @@ class TernJSEventListener(sublime_plugin.EventListener):
 		if completions and hasattr(completions, 'list'):
 			cmpl = [completion_item(c) for c in completions['list']]
 			# print(cmpl)
-			return (cmpl, sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS)
+			return cmpl
 
 
 		return None
