@@ -418,7 +418,7 @@ class TernJSEventListener(sublime_plugin.EventListener):
 		if is_js_view(view):
 			p = project.project_for_view(view)
 			if p:
-				sublime.set_timeout(lambda: ctx.js().locals.forceFileUpdate(view, p['id']))
+				sublime.set_timeout(lambda: ctx.js().locals.forceFileUpdate(view, p['id']), 1)
 			return
 
 
