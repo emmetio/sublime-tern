@@ -674,7 +674,7 @@
     while (!closesBlock(tt.braceR, propIndent, line)) {
       var name = parsePropertyName();
       if (!name) { if (isDummy(parseExpression(true))) next(); eat(tt.comma); continue; }
-      var prop = {key: name}, isGetSet = false, kind;
+      var prop = {key: name}, isGetSet = false, sawGetSet = false, kind;
       if (eat(tt.colon)) {
         prop.value = parseExpression(true);
         kind = prop.kind = "init";
