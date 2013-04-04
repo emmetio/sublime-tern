@@ -498,8 +498,10 @@ class TernjsRenameVariable(sublime_plugin.TextCommand):
 				regions.append(rg)
 
 		if regions:
-			view.sel().clear()
-			view.sel().add_all(regions)
+			sel = view.sel()
+			sel.clear()
+			for r in regions:
+				sel.add(r)
 			view.add_regions(rename_region_key, regions, 'string', flags=sublime.HIDDEN)
 
 			# create rename session
