@@ -213,6 +213,10 @@ function sendRequest(request, projectId) {
 }
 
 function forceFileUpdate(view, projectId) {
+	if (!(projectId in ternServers)) {
+		return;
+	}
+	
 	var req = buildFakeRequest();
 	req.files.push({
 		name: sublimeGetFileNameFromView(view),
