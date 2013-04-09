@@ -15,7 +15,7 @@ function startServer(project, libs) {
 	var files = project && project.files ? project.files : [];
 	
 	if (!(project.id in ternServers)) {
-		log('Staring TernJS server for ' + project.id + ' with ' + libs.length + ' libs and ' + files.length + ' files');
+		log('Starting TernJS server for ' + project.id + ' with ' + libs.length + ' libs and ' + files.length + ' files');
 		var makeDef = function(v) {
 			return _.isString(v) ? JSON.parse(v) : v;
 		};
