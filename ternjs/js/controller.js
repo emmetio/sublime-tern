@@ -20,7 +20,7 @@ function startServer(project, libs) {
 			return _.isString(v) ? JSON.parse(v) : v;
 		};
 
-		var env = _.map(libs || [], makeDef);
+		var defs = _.map(libs || [], makeDef);
 		var pluginOptions = {};
 
 		if (project.config && project.config.plugins) {
@@ -29,7 +29,7 @@ function startServer(project, libs) {
 				var plugin = loadPlugin(JSON.stringify(data), project);
 				if (plugin) {
 					if (plugin.definitions) {
-						env.push(makeDef(plugin.definitions));
+						defs.push(makeDef(plugin.definitions));
 					}
 
 					pluginOptions['' + plugin.id] = plugin.config || {};
@@ -42,7 +42,7 @@ function startServer(project, libs) {
 				// log('Requesting file ' + name);
 				return sublimeReadFile(name, project) || '';
 			}, 
-			environment: env,
+			defs: defs,
 			pluginOptions: pluginOptions,
 			debug: false,
 			async: false

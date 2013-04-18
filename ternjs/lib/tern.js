@@ -6,11 +6,11 @@
 
 (function(mod) {
   if (typeof exports == "object" && typeof module == "object") // CommonJS
-    return mod(exports, require("./infer"));
+    return mod(exports, require("./infer"), require("acorn/util/walk"));
   if (typeof define == "function" && define.amd) // AMD
-    return define(["exports", "./infer"], mod);
-  mod(self.tern || (self.tern = {}), tern); // Plain browser env
-})(function(exports, infer) {
+    return define(["exports", "./infer", "acorn/util/walk"], mod);
+  mod(self.tern || (self.tern = {}), tern, acorn.walk); // Plain browser env
+})(function(exports, infer, walk) {
   "use strict";
 
   var plugins = Object.create(null);
@@ -20,8 +20,8 @@
     debug: false,
     async: false,
     getFile: function(_f, c) { if (this.async) c(null, null); },
-    environment: [],
-    pluginOptions: {},
+    defs: [],
+    plugins: {},
     fetchTimeout: 1000
   };
 
@@ -30,13 +30,19 @@
       takesFile: true,
       run: findCompletions
     },
+    properties: {
+      run: findProperties
+    },
     type: {
       takesFile: true,
       run: findTypeAt
     },
+    documentation: {
+      takesFile: true,
+      run: findDocs
+    },
     definition: {
       takesFile: true,
-      fullFile: true,
       run: findDef
     },
     refs: {
@@ -48,6 +54,9 @@
       takesFile: true,
       fullFile: true,
       run: buildRename
+    },
+    files: {
+      run: listFiles
     }
   };
 
@@ -69,24 +78,21 @@
     for (var o in defaultOptions) if (!options.hasOwnProperty(o))
       options[o] = defaultOptions[o];
 
-    this.environment = [];
     this.handlers = {};
     this.files = [];
-    this.uses = 0;
+    this.analyses = 0;
     this.fetchingFiles = 0;
     this.asyncError = null;
 
-    for (var i = 0; i < options.environment.length; ++i)
-      this.addEnvironment(options.environment[i]);
+    this.defs = options.defs.slice(0);
+    for (var plugin in options.plugins) if (options.plugins.hasOwnProperty(plugin)) {
+      var init = plugins[plugin](this, options.plugins[plugin]);
+      if (init && init.defs) this.defs.push(init.defs);
+    }
+
     this.reset();
   };
   Server.prototype = {
-    addEnvironment: function(data) {
-      this.environment.push(data);
-      var plugin = data["!plugin"];
-      if (plugin && plugin in plugins)
-        plugins[plugin](this, this.options.pluginOptions[plugin]);
-    },
     addFile: function(name, /*optional*/ text) {
       ensureFile(this, name, text);
     },
@@ -98,8 +104,8 @@
       }
     },
     reset: function() {
-      this.cx = new infer.Context(this.environment, this);
-      this.uses = 0;
+      this.cx = new infer.Context(this.defs, this);
+      this.analyses = 0;
       for (var i = 0; i < this.files.length; ++i) clearFile(this, this.files[i]);
       this.signal("reset");
     },
@@ -111,8 +117,7 @@
       var self = this, files = doc.files || [];
       doRequest(this, doc, function(err, data) {
         c(err, data);
-        // FIXME better heuristic for when to reset
-        if (++self.uses > 20) {
+        if (self.analyses > 40) {
           self.reset();
           analyzeAll(self, function(){});
         }
@@ -121,6 +126,14 @@
 
     findFile: function(name) {
       return findFile(this.files, name);
+    },
+
+    flush: function(c) {
+      var cx = this.cx;
+      analyzeAll(this, function(err) {
+        if (err) return c(err);
+        infer.withContext(cx, c);
+      });
     },
 
     on: function(type, f) {
@@ -141,15 +154,17 @@
     if (doc.query && !queryTypes.hasOwnProperty(doc.query.type))
       return c("No query type '" + doc.query.type + "' defined");
 
+    var query = doc.query;
+    // Respond as soon as possible when this just uploads files
+    if (!query) c(null, {});
+
     var files = doc.files || [];
     for (var i = 0; i < files.length; ++i) {
       var file = files[i];
       ensureFile(srv, file.name, file.type == "full" ? file.text : null)
     }
 
-    var query = doc.query;
     if (!query) {
-      c(null, {});
       analyzeAll(srv, function(){});
       return;
     }
@@ -164,7 +179,7 @@
       if (err) return c(err);
       var file = queryType.takesFile && resolveFile(srv, files, query.file);
       if (queryType.fullFile && file.type == "part")
-        return("Can't run a " + query.type + " query on a file fragment");
+        return c("Can't run a " + query.type + " query on a file fragment");
 
       infer.withContext(srv.cx, function() {
         var result;
@@ -179,10 +194,8 @@
     });
   }
 
-  var depth = 0;
   function analyzeFile(srv, file) {
-    if (depth) console.trace("calling inside");
-    ++depth;
+    ++srv.analyses;
     infer.withContext(srv.cx, function() {
       file.scope = srv.cx.topScope;
       srv.signal("beforeLoad", file);
@@ -191,7 +204,6 @@
       infer.purgeMarkedVariables(file.scope);
       srv.signal("afterLoad", file);
     });
-    --depth;
     return file;
   }
 
@@ -214,7 +226,7 @@
         if (--srv.fetchingFiles == 0) srv.signal("everythingFetched");
       });
     } else {
-      updateText(file, srv.options.getFile(name));
+      updateText(file, srv.options.getFile(name) || "");
     }
   }
 
@@ -262,7 +274,7 @@
   }
 
   function analyzeAll(srv, c) {
-    if (srv.fetchingFiles) return waitForFiles(srv, c);
+    if (srv.fetchingFiles) return waitOnFetch(srv, c);
 
     var e = srv.fetchError;
     if (e) { srv.fetchError = null; return c(e); }
@@ -313,7 +325,9 @@
     // This is a partial file
 
     var realFile = findFile(srv.files, file.name);
-    var offset = file.offset != null ? file.offset : findLineStart(file, file.offsetLine) || 0;
+    var offset = file.offset;
+    if (offset == null)
+      offset = file.offset = findLineStart(realFile, file.offsetLines) || 0;
     var line = firstLine(file.text);
     var foundPos = findMatchingPosition(line, realFile.text, offset);
     var pos = foundPos == null ? Math.max(0, realFile.text.lastIndexOf("\n", offset)) : foundPos;
@@ -423,7 +437,23 @@
   }
 
   function outputPos(query, file, pos) {
-    return query.lineCharPositions ? asLineChar(file, pos) : pos;
+    if (query.lineCharPositions) {
+      var out = asLineChar(file, pos);
+      if (file.type == "part")
+        out.line += file.offsetLines != null ? file.offsetLines : asLineChar(file, file.offset).line;
+      return out;
+    } else {
+      return pos + (file.type == "part" ? file.offset : 0);
+    }
+  }
+
+  // Delete empty fields from result objects
+  function clean(obj) {
+    for (var prop in obj) if (obj[prop] == null) delete obj[prop];
+    return obj;
+  }
+  function maybeSet(obj, prop, val) {
+    if (val != null) obj[prop] = val;
   }
 
   // Built-in query types
@@ -435,20 +465,25 @@
     else return aUp ? 1 : -1;
   }
 
+  function isStringAround(node, start, end) {
+    return node.type == "Literal" && typeof node.value == "string" &&
+      node.start == start - 1 && node.end <= end + 1;
+  }
+
   function findCompletions(srv, query, file) {
     if (query.end == null) throw new Error("missing .query.end field");
     var wordStart = resolvePos(file, query.end), wordEnd = wordStart, text = file.text;
     while (wordStart && /\w$/.test(text.charAt(wordStart - 1))) --wordStart;
-    while (wordEnd < text.length && /\w$/.test(text.charAt(wordEnd))) ++wordEnd;
+    if (query.expandWordForward !== false)
+      while (wordEnd < text.length && /\w$/.test(text.charAt(wordEnd))) ++wordEnd;
     var word = text.slice(wordStart, wordEnd), completions = [];
-    var wrapAsObjs = query.types || query.depths;
+    var wrapAsObjs = query.types || query.depths || query.docs || query.urls || query.origins;
 
     function gather(prop, obj, depth) {
       // 'hasOwnProperty' and such are usually just noise, leave them
       // out when no prefix is provided.
       if (query.omitObjectPrototype !== false && obj == srv.cx.protos.Object && !word) return;
       if (query.filter !== false && word && prop.indexOf(word) != 0) return;
-      var val = obj.props[prop];
       for (var i = 0; i < completions.length; ++i) {
         var c = completions[i];
         if ((wrapAsObjs ? c.name : c) == prop) return;
@@ -456,21 +491,33 @@
       var rec = wrapAsObjs ? {name: prop} : prop;
       completions.push(rec);
 
-      if (query.types) {
+      if (query.types || query.docs || query.urls || query.origins) {
+        var val = obj ? obj.props[prop] : infer.ANull;
         infer.resetGuessing();
         var type = val.getType();
         rec.guess = infer.didGuess();
-        rec.type = infer.toString(type);
+        if (query.types)
+          rec.type = infer.toString(type);
+        if (query.docs)
+          maybeSet(rec, "doc", val.doc || type && type.doc);
+        if (query.urls)
+          maybeSet(rec, "url", val.url || type && type.url);
+        if (query.origins)
+          maybeSet(rec, "origin", val.origin || type && type.origin);
       }
       if (query.depths) rec.depth = depth;
     }
 
     var memberExpr = infer.findExpressionAround(file.ast, null, wordStart, file.scope, "MemberExpression");
-    if (memberExpr && !memberExpr.node.computed && memberExpr.node.object.end < wordStart) {
+    if (memberExpr &&
+        (memberExpr.node.computed ? isStringAround(memberExpr.node.property, wordStart, wordEnd)
+                                  : memberExpr.node.object.end < wordStart)) {
       memberExpr.node = memberExpr.node.object;
       var tp = infer.expressionType(memberExpr);
       if (tp) infer.forAllPropertiesOf(tp, gather);
 
+      if (!completions.length && query.guess !== false && tp && tp.guessProperties)
+        tp.guessProperties(function(p, o, d) {if (p != word && p != "✖") gather(p, o, d);});
       if (!completions.length && word.length >= 2 && query.guess !== false)
         for (var prop in srv.cx.props) gather(prop, srv.cx.props[prop][0], 0);
     } else {
@@ -484,15 +531,30 @@
             completions: completions};
   }
 
+  function findProperties(srv, query) {
+    var prefix = query.prefix, found = [];
+    for (var prop in srv.cx.props)
+      if (prop != "<i>" && (!prefix || prop.indexOf(prefix) == 0)) found.push(prop);
+    if (query.sort !== false) found.sort(compareCompletions);
+    return {completions: found};
+  }
+
   var findExpr = exports.findQueryExpr = function(file, query) {
     if (query.end == null) throw new Error("missing .query.end field");
-    var start = query.start && resolvePos(file, query.start), end = resolvePos(file, query.end);
-    var expr = infer.findExpressionAt(file.ast, start, end, file.scope);
-    if (expr) return expr;
-    expr = infer.findExpressionAround(file.ast, start, end, file.scope);
-    if (expr && (start == null || start - expr.node.start < 20) &&
-        expr.node.end - end < 20) return expr;
-    throw new Error("No expression at the given position.");
+
+    if (query.variable) {
+      var scope = infer.scopeAt(file.ast, query.end, file.scope);
+      return {node: {type: "Identifier", name: query.variable, start: query.end, end: query.end + 1},
+              state: scope};
+    } else {
+      var start = query.start && resolvePos(file, query.start), end = resolvePos(file, query.end);
+      var expr = infer.findExpressionAt(file.ast, start, end, file.scope);
+      if (expr) return expr;
+      expr = infer.findExpressionAround(file.ast, start, end, file.scope);
+      if (expr && (start == null || start - expr.node.start < 20 || expr.node.end - end < 20))
+        return expr;
+      throw new Error("No expression at the given position.");
+    }
   };
 
   function findTypeAt(_srv, query, file) {
@@ -509,49 +571,78 @@
     else if (expr.node.type == "MemberExpression" && !expr.node.computed)
       var exprName = expr.node.property.name;
 
-    var name = type && type.name;
-    if (name && typeof name != "string") name = name.name;
     if (query.depth != null && typeof query.depth != "number")
       throw new Error(".query.depth must be a number");
 
-    return {guess: infer.didGuess(),
-            type: infer.toString(type, query.depth),
-            name: name || null,
-            exprName: exprName || null};
+    return clean({guess: infer.didGuess(),
+                  type: infer.toString(type, query.depth),
+                  name: type && type.name,
+                  url: type && type.url,
+                  doc: type && type.doc,
+                  origin: type && type.origin,
+                  exprName: exprName});
+  }
+
+  // FIXME for doc-less instance types, use the docs of the ctor
+  function findDocs(_srv, query, file) {
+    var expr = findExpr(file, query), prop;
+    if (expr.node.type == "Identifier") {
+      prop = expr.state.hasProp(expr.node.name);
+    } else if (expr.node.type == "MemberExpression" && !expr.node.computed) {
+      var base = infer.expressionType({node: expr.node.object, state: expr.state});
+      if (base instanceof infer.Obj) prop = base.hasProp(expr.node.property.name);
+    }
+    var url = prop && prop.url, doc = prop && prop.doc;
+    if (!url && !doc) {
+      var type = infer.expressionType(expr);
+      if (type && (type = type.getType())) {
+        url = type.url;
+        doc = type.doc;
+      }
+    }
+    return clean({url: url, doc: doc});
+  }
+
+  function isInAST(node, ast) {
+    var found = walk.findNodeAt(ast, node.start, node.end, node.type, infer.searchVisitor);
+    return found && found.node == node;
   }
 
   function findDef(srv, query, file) {
-    var expr = findExpr(file, query), def, fileName, guess = false;
-    if (expr.node.type == "Identifier") {
-      var found = expr.state.hasProp(expr.node.name);
-      if (found && typeof found.name == "object") {
-        def = found.name;
-        fileName = found.origin;
-      }
+    var expr = findExpr(file, query), fileName, guess = false;
+    infer.resetGuessing();
+    var type = infer.expressionType(expr);
+    var url = type.url, doc = type.doc, origin = type.origin, node = type.originNode;
+    if (type.types) for (var i = type.types.length - 1; i >= 0; --i) {
+      var tp = type.types[i];
+      if (!url && tp.url) url = tp.url;
+      if (!doc && tp.doc) doc = tp.doc;
+      if (!origin && tp.origin) origin = tp.origin;
+      if (!node && tp.originNode) { node = tp.originNode; break; }
     }
-    if (!def) {
-      infer.resetGuessing();
-      var type = infer.expressionType(expr);
-      if (type.types) for (var i = type.types.length - 1; i >= 0; --i) {
-        var tp = type.types[i];
-        if (tp.originNode) { type = tp; break; }
-      }
-      def = type.originNode;
-      if (def) {
-        if (/^Function/.test(def.type) && def.id) def = def.id;
-        fileName = type.origin;
-        guess = infer.didGuess();
-      }
+    if (node) {
+      if (/^Function/.test(node.type) && node.id) node = node.id;
+      fileName = origin;
     }
-    if (!def) throw new Error("Could not find a definition for the given expression");
 
-    var defFile = findFile(srv.files, fileName);
-    return {start: outputPos(query, defFile, def.start),
-            end: outputPos(query, defFile, def.end),
-            file: fileName, guess: guess};
+    var result = {guess: infer.didGuess()};
+    if (node) {
+      var inFragment = file.type == "part" && file.name == fileName && isInAST(node, file.ast);
+      var outerFile = findFile(srv.files, fileName), nodeFile = inFragment ? file : outerFile;
+      var start = outputPos(query, nodeFile, node.start), end = outputPos(query, nodeFile, node.end);
+      result.start = start; result.end = end;
+      result.file = fileName;
+      var cxStart = Math.max(0, node.start - 50);
+      result.contextOffset = node.start - cxStart;
+      result.context = nodeFile.text.slice(cxStart, cxStart + 50);
+    }
+    if (url) result.url = url;
+    if (doc) result.doc = doc;
+    if (origin) result.origin = origin;
+    return result;
   }
 
-  function findRefs(srv, query, file) {
+  function findRefs(srv, query, file, checkShadowing) {
     var expr = findExpr(file, query);
     if (!expr || expr.node.type != "Identifier") throw new Error("Not at a variable.");
     var name = expr.node.name;
@@ -560,26 +651,46 @@
     if (!scope) throw new Error("Could not find a definition for " + name);
 
     var type, refs = [];
-    function findRefsIn(file) {
-      infer.findRefs(file.ast, name, scope, function(node) {
+    function storeRef(file) {
+      return function(node, scopeHere) {
+        if (checkShadowing) for (var s = scopeHere; s != scope; s = s.prev) {
+          var exists = s.hasProp(checkShadowing);
+          if (exists)
+            throw new Error("Renaming `" + name + "` to `" + checkShadowing + "` would make a variable at line " +
+                            (asLineChar(file, node.start).line + 1) + " point to the definition at line " +
+                            (asLineChar(file, exists.name.start).line + 1));
+        }
         refs.push({file: file.name,
                    start: outputPos(query, file, node.start),
                    end: outputPos(query, file, node.end)});
-      });
+      };
     }
-    if (scope.prev) {
+
+    if (scope.node) {
       type = "local";
-      findRefsIn(file);
+      if (checkShadowing) {
+        for (var prev = scope.prev; prev; prev = prev.prev)
+          if (checkShadowing in prev.props) break;
+        if (prev) infer.findRefs(scope.node, scope, checkShadowing, prev, function(node) {
+          throw new Error("Renaming `" + name + "` to `" + checkShadowing + "` would shadow the definition used at line " +
+                          (asLineChar(file, node.start).line + 1));
+        });
+      }
+      infer.findRefs(scope.node, scope, name, scope, storeRef(file));
     } else {
       type = "global";
-      for (var i = 0; i < srv.files.length; ++i) findRefsIn(srv.files[i]);
+      for (var i = 0; i < srv.files.length; ++i) {
+        var cur = srv.files[i];
+        infer.findRefs(cur.ast, cur.scope, name, scope, storeRef(cur));
+      }
     }
+
     return {refs: refs, type: type, name: name};
   }
 
   function buildRename(srv, query, file) {
     if (typeof query.newName != "string") throw new Error(".query.newName should be a string");
-    var data = findRefs(srv, query, file), refs = data.refs;
+    var data = findRefs(srv, query, file, query.newName), refs = data.refs;
     delete data.refs;
     data.files = srv.files.map(function(f){return f.name;});
 
@@ -591,5 +702,9 @@
     }
 
     return data;
+  }
+
+  function listFiles(srv, query) {
+    return {files: srv.files.map(function(f){return f.name;})};
   }
 });

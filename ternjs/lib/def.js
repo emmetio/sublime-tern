@@ -13,7 +13,7 @@
     return exports.init = mod;
   if (typeof define == "function" && define.amd) // AMD
     return define({init: mod});
-  tern.env = {init: mod};
+  tern.def = {init: mod};
 })(function(exports, infer) {
   "use strict";
 
@@ -21,10 +21,11 @@
     return Object.prototype.hasOwnProperty.call(obj, prop);
   }
 
-  var TypeParser = exports.TypeParser = function(spec, start, base) {
+  var TypeParser = exports.TypeParser = function(spec, start, base, forceNew) {
     this.pos = start || 0;
     this.spec = spec;
     this.base = base;
+    this.forceNew = forceNew;
   };
   TypeParser.prototype = {
     eat: function(str) {
@@ -66,8 +67,8 @@
           computeRet = this.parseRetType();
         } else retType = this.parseType();
       } else retType = infer.ANull;
-      if (top && this.base)
-        fn = infer.Fn.call(this.base, name, infer.ANull, args, names, retType);
+      if (top && (fn = this.base))
+        infer.Fn.call(this.base, name, infer.ANull, args, names, retType);
       else
         fn = new infer.Fn(name, infer.ANull, args, names, retType);
       if (computeRet) fn.computeRet = computeRet;
@@ -79,16 +80,18 @@
       } else if (this.eat("[")) {
         var inner = this.parseType();
         this.eat("]") || this.error();
-        if (top && this.base)
-          return infer.Arr.call(this.base, inner);
-        else
-          return new infer.Arr(inner);
+        if (top && this.base) {
+          infer.Arr.call(this.base, inner);
+          return this.base;
+        }
+        return new infer.Arr(inner);
       } else if (this.eat("+")) {
         var path = this.word(/[\w$<>\.!]/);
         var base = parsePath(path + ".prototype");
         if (!(base instanceof infer.Obj)) base = parsePath(path);
-        if (base instanceof infer.Obj) return infer.getInstance(base);
-        return base;
+        if (!(base instanceof infer.Obj)) return base;
+        if (top && this.forceNew) return new infer.Obj(base);
+        return infer.getInstance(base);
       } else if (this.eat("?")) {
         return infer.ANull;
       } else {
@@ -141,13 +144,13 @@
     }
   }
 
-  function parseType(spec, name, base) {
-    var type = new TypeParser(spec, null, base).parseType(name, true);
+  function parseType(spec, name, base, forceNew) {
+    var type = new TypeParser(spec, null, base, forceNew).parseType(name, true);
     if (/^fn\(/.test(spec)) for (var i = 0; i < type.args.length; ++i) (function(i) {
       var arg = type.args[i];
       if (arg instanceof infer.Fn && arg.args.length) addEffect(type, function(_self, fArgs) {
         var fArg = fArgs[i];
-        if (fArg) fArg.propagate(new infer.IsCallee(infer.cx().topScope, arg.args));
+        if (fArg) fArg.propagate(new infer.IsCallee(infer.cx().topScope, arg.args, null, infer.ANull));
       });
     })(i);
     return type;
@@ -179,7 +182,7 @@
         var callee = getCallee(self, args);
         var slf = getSelf ? getSelf(self, args) : infer.ANull, as = [];
         for (var i = 0; i < getArgs.length; ++i) as.push(getArgs[i](self, args));
-        callee.propagate(new infer.IsCallee(slf, as));
+        callee.propagate(new infer.IsCallee(slf, as, null, infer.ANull));
       });
     } else if (effect.indexOf("custom ") == 0) {
       var customFunc = customFunctions[effect.slice(7).trim()];
@@ -208,9 +211,20 @@
     if (cached != null) return cached;
     cx.paths[path] = infer.ANull;
 
+    var base = currentTopScope || cx.topScope;
+
+    if (cx.localDefs) for (var name in cx.localDefs) {
+      if (path.indexOf(name) == 0) {
+        if (path == name) return cx.paths[path] = cx.localDefs[path];
+        if (path.charAt(name.length) == ".") {
+          base = cx.localDefs[name];
+          path = path.slice(name.length + 1);
+        }
+      }
+    }
+
     var isdate = /^Date.prototype/.test(path);
     var parts = path.split(".");
-    var base = currentTopScope || cx.topScope;
     for (var i = 0; i < parts.length && base != infer.ANull; ++i) {
       var prop = parts[i];
       if (prop.charAt(0) == "!") {
@@ -248,6 +262,14 @@
     return empty;
   }
 
+  function isSimpleAnnotation(spec) {
+    if (!spec["!type"]) return false;
+    for (var prop in spec)
+      if (prop != "!type" && prop != "!doc" && prop != "!url")
+        return false;
+    return true;
+  }
+
   function passOne(base, spec, path) {
     if (!base) {
       var tp = spec["!type"];
@@ -265,7 +287,7 @@
 
     for (var name in spec) if (hop(spec, name) && name.charCodeAt(0) != 33) {
       var inner = spec[name];
-      if (typeof inner == "string") continue;
+      if (typeof inner == "string" || isSimpleAnnotation(inner)) continue;
       var prop = base.defProp(name);
       passOne(prop.getType(), inner, path ? path + "." + name : name).propagate(prop);
     }
@@ -279,8 +301,8 @@
       if (tp) {
         parseType(tp, path, base);
       } else {
-        var proto = spec["!proto"];
-        infer.Obj.call(base, proto ? parseType(proto) : true, path);
+        var proto = spec["!proto"] && parseType(spec["!proto"]);
+        infer.Obj.call(base, proto instanceof infer.Obj ? proto : true, path);
       }
     }
 
@@ -290,11 +312,27 @@
 
     for (var name in spec) if (hop(spec, name) && name.charCodeAt(0) != 33) {
       var inner = spec[name], known = base.defProp(name), innerPath = path ? path + "." + name : name;
+      var type = known.getType();
       if (typeof inner == "string") {
-        if (known.getType()) continue;
+        if (type) continue;
         parseType(inner, innerPath).propagate(known);
       } else {
-        passTwo(known.getType(), inner, innerPath);
+        if (!isSimpleAnnotation(inner)) {
+          passTwo(type, inner, innerPath);
+        } else if (!type) {
+          if (!inner["!type"]) console.log(innerPath);
+          parseType(inner["!type"], innerPath, null, true).propagate(known);
+          type = known.getType();
+        } else continue;
+        var doc = inner["!doc"], url = inner["!url"];
+        if (doc) {
+          if (type && type instanceof infer.Obj) type.doc = doc;
+          known.doc = doc;
+        }
+        if (url) {
+          if (type && type instanceof infer.Obj) type.url = url;
+          known.url = url;
+        }
       }
     }
   }
@@ -310,10 +348,14 @@
 
     var def = data["!define"];
     if (def) {
-      for (var name in def)
-        cx.localDefs[name] = passOne(null, def[name], name);
-      for (var name in def)
-        passTwo(cx.localDefs[name], def[name]);
+      for (var name in def) {
+        var spec = def[name];
+        cx.localDefs[name] = typeof spec == "string" ? parsePath(spec) : passOne(null, spec, name);
+      }
+      for (var name in def) {
+        var spec = def[name];
+        if (typeof spec != "string") passTwo(cx.localDefs[name], def[name]);
+      }
     }
 
     passTwo(scope, data);
@@ -321,7 +363,7 @@
     cx.curOrigin = cx.loading = cx.localDefs = null;
   }
 
-  exports.loadEnvironment = function(data, scope) {
+  exports.load = function(data, scope) {
     if (!scope) scope = infer.cx().topScope;
     var oldScope = currentTopScope;
     currentTopScope = scope;
@@ -337,25 +379,33 @@
   var customFunctions = Object.create(null);
   infer.registerFunction = function(name, f) { customFunctions[name] = f; };
 
-  infer.registerFunction("Object_create", function(self, args) {
-    var result = new infer.AVal;
-    if (args[0]) args[0].propagate({addType: function(tp) {
-      if (tp.isEmpty()) {
-        result.addType(new infer.Obj());
-      } else if (tp instanceof infer.Obj) {
-        var derived = new infer.Obj(tp), spec = args[1];
-        if (spec instanceof infer.AVal) spec = spec.types[0];
-        if (spec instanceof infer.Obj) for (var prop in spec.props) {
-          var cur = spec.props[prop].types[0];
-          var p = derived.defProp(prop);
-          if (cur && cur instanceof infer.Obj && cur.props.value) {
-            var vtp = cur.props.value.getType();
-            if (vtp) p.addType(vtp);
+  var IsCreated;
+  function initIsCreated() {
+    return IsCreated || (IsCreated = infer.constraint("created, target, spec", {
+      addType: function(tp) {
+        if (tp instanceof infer.Obj && this.created++ < 5) {
+          var derived = new infer.Obj(tp), spec = this.spec;
+          if (spec instanceof infer.AVal) spec = spec.getType();
+          if (spec instanceof infer.Obj) for (var prop in spec.props) {
+            var cur = spec.props[prop].types[0];
+            var p = derived.defProp(prop);
+            if (cur && cur instanceof infer.Obj && cur.props.value) {
+              var vtp = cur.props.value.getType();
+              if (vtp) p.addType(vtp);
+            }
           }
+          this.target.addType(derived)
         }
-        result.addType(derived)
       }
-    }});
+    }));
+  }
+
+  infer.registerFunction("Object_create", function(self, args, argNodes) {
+    if (argNodes.length && argNodes[0].type == "Literal" && argNodes[0].value == null)
+      return new infer.Obj();
+
+    var result = new infer.AVal;
+    if (args[0]) args[0].propagate(new (initIsCreated())(0, result, args[1]));
     return result;
   });
 

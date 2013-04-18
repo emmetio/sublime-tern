@@ -20,7 +20,7 @@ DEFAULT_LIBS = ['ecma5']
 
 TERNJS_FILES = ['js/bootstrap.js', 
 			  'js/acorn.js', 'js/acorn_loose.js', 'js/walk.js', 
-			  'js/tern.js', 'js/env.js', 'js/jsdoc.js', 'js/infer.js', 
+			  'lib/tern.js', 'lib/def.js', 'lib/jsdoc.js', 'lib/infer.js', 
 			  'js/lodash.js', 'js/controller.js']
 
 try:
@@ -179,7 +179,7 @@ class Context():
 					self._ctx.locals[k] = self._contrib[k]
 
 		if not hasattr(self._ctx.locals, 'isTernJS'):
-			print('Should enter context')
+			print('Enter TernJS context')
 			self._ctx.enter()
 
 		return self._ctx
