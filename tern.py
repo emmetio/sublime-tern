@@ -525,6 +525,45 @@ class TernjsCommitRename(sublime_plugin.TextCommand):
 
 		globals()['_rename_session'] = None
 
+class FindOccurance(sublime_plugin.TextCommand):
+	def get_regions(self, direction='next'):
+		if not can_run(): return
+		view = active_view()
+
+		proj = project.project_for_view(view) or {}
+		refs = ctx.js().locals.ternFindRefs(view, proj.get('id', 'empty'))
+
+		# use local references only
+		regions = []
+		file_name = file_name_from_view(view)
+
+		for r in refs['refs']:
+			if file_name == r['file']:
+				regions.append(sublime.Region(r['start'], r['end']))
+
+		return regions
+
+class TernjsNextOccurance(FindOccurance):
+	def run(self, edit, **kw):
+		view = active_view()
+		caret_pos = view.sel()[0].begin()
+
+		for r in self.get_regions():
+			if r.begin() > caret_pos:
+				view.sel().clear()
+				view.sel().add(r)
+				return
+
+class TernjsPreviousOccurance(FindOccurance):
+	def run(self, edit, **kw):
+		view = active_view()
+		caret_pos = view.sel()[0].begin()
+
+		for r in reversed(self.get_regions()):
+			if r.begin() < caret_pos:
+				view.sel().clear()
+				view.sel().add(r)
+				return
 
 def plugin_loaded():
 	init()

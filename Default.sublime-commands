@@ -10,5 +10,13 @@
 	{
 		"caption": "TernJS: Rename variable",
 		"command": "ternjs_rename_variable"
+	},
+	{
+		"caption": "TernJS: Next Occurance",
+		"command": "ternjs_next_occurance"
+	},
+	{
+		"caption": "TernJS: Previous Occurance",
+		"command": "ternjs_previous_occurance"
 	}
 ]
