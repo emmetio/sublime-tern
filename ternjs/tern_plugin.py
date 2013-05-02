@@ -45,7 +45,7 @@ def parse_plugin_def(plugin, ctx, project=None):
 	if isstr(plugin):
 		plugin = json.loads(plugin)
 	
-	plugin_file = os.path.join(plugin['pluginId'], '%s.js' % plugin['pluginId'])
+	plugin_file = os.path.join('%s.js' % plugin['pluginId'])
 	paths = []
 
 	project_path = None
