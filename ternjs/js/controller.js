@@ -43,7 +43,7 @@ function startServer(project, libs) {
 				return sublimeReadFile(name, project) || '';
 			}, 
 			defs: defs,
-			pluginOptions: pluginOptions,
+			plugins: pluginOptions,
 			debug: false,
 			async: false
 		});
