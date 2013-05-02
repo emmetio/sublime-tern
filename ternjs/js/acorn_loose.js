@@ -111,7 +111,13 @@
         }
         resetTo(pos);
         if (replace === true) replace = {start: pos, end: pos, type: tt.name, value: "✖"};
-        if (replace) return replace;
+        if (replace) {
+          if (options.locations) {
+            replace.startLoc = acorn.getLineInfo(input, replace.start);
+            replace.endLoc = acorn.getLineInfo(input, replace.end);
+          }
+          return replace;
+        }
       }
     }
   }
@@ -123,15 +129,22 @@
     fetchToken.jumpTo(pos, reAllowed);
   }
 
+  function copyToken(token) {
+    var copy = {start: token.start, end: token.end, type: token.type, value: token.value};
+    if (options.locations) {
+      copy.startLoc = token.startLoc;
+      copy.endLoc = token.endLoc;
+    }
+    return copy;
+  }
+
   function lookAhead(n) {
     // Copy token objects, because fetchToken will overwrite the one
     // it returns, and in this case we still need it
     if (!ahead.length)
-      token = {start: token.start, end: token.end, type: token.type, value: token.value};
-    while (n > ahead.length) {
-      var tok = readToken();
-      ahead.push({start: tok.from, end: tok.end, type: tok.type, value: tok.value});
-    }
+      token = copyToken(token);
+    while (n > ahead.length)
+      ahead.push(copyToken(readToken()));
     return ahead[n-1];
   }
 
@@ -190,8 +203,8 @@
     this.end = null;
   }
 
-  function node_loc_t() {
-    this.start = token.startLoc;
+  function node_loc_t(start) {
+    this.start = start || token.startLoc || {line: 1, column: 0};
     this.end = null;
     if (sourceFile !== null) this.source = sourceFile;
   }
@@ -202,9 +215,14 @@
       node.loc = new node_loc_t();
     return node
   }
+
   function startNodeFrom(other) {
-    return new node_t(other.start);
+    var node = new node_t(other.start);
+    if (options.locations)
+      node.loc = new node_loc_t(other.loc.start);
+    return node;
   }
+
   function finishNode(node, type) {
     node.type = type;
     node.end = lastEnd;
@@ -213,11 +231,20 @@
     return node;
   }
 
+  function getDummyLoc() {
+    if (options.locations) {
+      var loc = new node_loc_t();
+      loc.end = loc.start;
+      return loc;
+    }
+  };
+
   function dummyIdent() {
-    var dummy = new node_t(0);
+    var dummy = new node_t(token.start);
     dummy.type = "Identifier";
-    dummy.end = 0;
+    dummy.end = token.start;
     dummy.name = "✖";
+    dummy.loc = getDummyLoc();
     return dummy;
   }
   function isDummy(node) { return node.name == "✖"; }
@@ -358,8 +385,8 @@
     case tt.try:
       next();
       node.block = parseBlock();
-      node.handlers = [];
-      while (token.type === tt.catch) {
+      node.handler = null;
+      if (token.type === tt.catch) {
         var clause = startNode();
         next();
         expect(tt.parenL);
@@ -367,10 +394,10 @@
         expect(tt.parenR);
         clause.guard = null;
         clause.body = parseBlock();
-        node.handlers.push(finishNode(clause, "CatchClause"));
+        node.handler = finishNode(clause, "CatchClause");
       }
       node.finalizer = eat(tt.finally) ? parseBlock() : null;
-      if (!node.handlers.length && !node.finalizer) return node.block;
+      if (!node.handler && !node.finalizer) return node.block;
       return finishNode(node, "TryStatement");
 
     case tt.var:
@@ -674,13 +701,13 @@
     while (!closesBlock(tt.braceR, propIndent, line)) {
       var name = parsePropertyName();
       if (!name) { if (isDummy(parseExpression(true))) next(); eat(tt.comma); continue; }
-      var prop = {key: name}, isGetSet = false, sawGetSet = false, kind;
+      var prop = {key: name}, isGetSet = false, kind;
       if (eat(tt.colon)) {
         prop.value = parseExpression(true);
         kind = prop.kind = "init";
       } else if (options.ecmaVersion >= 5 && prop.key.type === "Identifier" &&
                  (prop.key.name === "get" || prop.key.name === "set")) {
-        isGetSet = sawGetSet = true;
+        isGetSet = true;
         kind = prop.kind = prop.key.name;
         prop.key = parsePropertyName() || dummyIdent();
         prop.value = parseFunction(startNode(), false);

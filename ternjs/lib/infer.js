@@ -59,11 +59,10 @@
 
   var WG_DEFAULT = 100, WG_MADEUP_PROTO = 10, WG_MULTI_MEMBER = 5, WG_GLOBAL_THIS = 2;
 
-  var AVal = exports.AVal = function(type) {
+  var AVal = exports.AVal = function() {
     this.types = [];
     this.forward = null;
     this.maxWeight = 0;
-    if (type) type.propagate(this);
   };
   AVal.prototype = extend(ANull, {
     addType: function(type, weight) {
@@ -93,6 +92,7 @@
     },
 
     getProp: function(prop) {
+      if (prop == "__proto__" || prop == "✖") return ANull;
       var found = (this.props || (this.props = Object.create(null)))[prop];
       if (!found) {
         found = this.props[prop] = new AVal;
@@ -143,7 +143,7 @@
         search: for (var i = 0; i < objs.length; ++i) {
           var obj = objs[i];
           for (var prop in props) if (!obj.hasProp(prop)) continue search;
-          if (obj.isProtoOf) obj = getInstance(obj);
+          if (obj.hasCtor) obj = getInstance(obj);
           matches.push(obj);
         }
         var canon = canonicalType(matches);
@@ -251,18 +251,23 @@
   var IsCallee = exports.IsCallee = constraint("self, args, argNodes, retval", {
     addType: function(fn, weight) {
       if (!(fn instanceof Fn)) return;
-      for (var i = 0, e = Math.min(this.args.length, fn.args.length); i < e; ++i)
-        this.args[i].propagate(fn.args[i], weight);
+      for (var i = 0; i < this.args.length; ++i) {
+        if (i < fn.args.length) this.args[i].propagate(fn.args[i], weight);
+        if (fn.arguments) this.args[i].propagate(fn.arguments, weight);
+      }
       this.self.propagate(fn.self, this.self == cx.topScope ? WG_GLOBAL_THIS : weight);
       if (!fn.computeRet)
         fn.retval.propagate(this.retval, weight);
-      else if ((this.computed = (this.computed || 0) + 1) < 5)
+      else
         fn.computeRet(this.self, this.args, this.argNodes).propagate(this.retval, weight);
     },
     typeHint: function() {
       var names = [];
       for (var i = 0; i < this.args.length; ++i) names.push("?");
       return new Fn(null, this.self, this.args, names, ANull);
+    },
+    propagatesTo: function() {
+      return {target: this.retval, pathExt: ".!ret"};
     }
   });
 
@@ -281,7 +286,7 @@
   });
 
   var getInstance = exports.getInstance = function(obj, ctor) {
-    if (!ctor) ctor = obj.isProtoOf;
+    if (!ctor) ctor = obj.hasCtor;
     if (!obj.instances) obj.instances = [];
     for (var i = 0; i < obj.instances.length; ++i) {
       var cur = obj.instances[i];
@@ -296,14 +301,17 @@
   var IsProto = constraint("ctor, target", {
     addType: function(o, weight) {
       if (!(o instanceof Obj)) return;
-      this.target.addType(getInstance(o, this.ctor));
+      if (o == cx.protos.Array)
+        this.target.addType(new Arr);
+      else
+        this.target.addType(getInstance(o, this.ctor));
     }
   });
 
   var FnPrototype = constraint("fn", {
     addType: function(o, weight) {
-      if (o instanceof Obj && !o.isProtoOf)
-        o.isProtoOf = this.fn;
+      if (o instanceof Obj && !o.hasCtor)
+        o.hasCtor = this.fn;
     }
   });
 
@@ -355,7 +363,7 @@
   var Prim = exports.Prim = function(proto, name) { this.name = name; this.proto = proto; };
   Prim.prototype = extend(Type.prototype, {
     toString: function() { return this.name; },
-    getProp: function(prop) {return this.proto.props[prop] || ANull;},
+    getProp: function(prop) {return this.proto.hasProp(prop) || ANull;},
     gatherProperties: function(f, depth) {
       if (this.proto) this.proto.gatherProperties(f, depth);
     }
@@ -395,8 +403,11 @@
     },
     defProp: function(prop, originNode) {
       var found = this.hasProp(prop, false);
-      if (found) return found;
-      if (prop == "__proto__" || prop == "✖") return new AVal;
+      if (found) {
+        if (originNode && !found.originNode) found.originNode = originNode;
+        return found;
+      }
+      if (prop == "__proto__" || prop == "✖") return ANull;
 
       var av = this.maybeProps && this.maybeProps[prop];
       if (av) {
@@ -559,6 +570,7 @@
     exports.withContext(this, function() {
       cx.protos.Object = new Obj(null, "Object.prototype");
       cx.topScope = new Scope();
+      cx.topScope.name = "<top>";
       cx.protos.Array = new Obj(true, "Array.prototype");
       cx.protos.Function = new Obj(true, "Function.prototype");
       cx.protos.RegExp = new Obj(true, "RegExp.prototype");
@@ -589,7 +601,7 @@
     if (cx.origins.indexOf(origin) < 0) cx.origins.push(origin);
   };
 
-  var baseMaxWorkDepth = 20, reduceMaxWorkDepth = .001;
+  var baseMaxWorkDepth = 20, reduceMaxWorkDepth = .0001;
   function withWorklist(f) {
     if (cx.workList) return f(cx.workList);
 
@@ -613,8 +625,8 @@
   // SCOPES
 
   var Scope = exports.Scope = function(prev) {
-    this.prev = prev;
     Obj.call(this, prev || true);
+    this.prev = prev;
   };
   Scope.prototype = extend(Obj.prototype, {
     defVar: function(name, originNode) {
@@ -628,42 +640,57 @@
 
   // RETVAL COMPUTATION HEURISTICS
 
-  function maybeTypeManipulator(scope, score) {
-    if (!scope.typeManipScore) scope.typeManipScore = 0;
-    scope.typeManipScore += score;
+  function maybeInstantiate(scope, score) {
+    if (scope.fnType)
+      scope.fnType.instantiateScore = (scope.fnType.instantiateScore || 0) + score;
   }
 
-  function maybeTagAsTypeManipulator(node, scope) {
-    if (scope.typeManipScore && scope.typeManipScore / (node.end - node.start) > .01) {
-      var fn = scope.fnType;
-      // Disconnect the arg avals, so that we can add info to them without side effects
-      for (var i = 0; i < fn.args.length; ++i) fn.args[i] = new AVal;
-      fn.self = new AVal;
-      var computeRet = fn.computeRet = function(self, args) {
-        // Prevent recursion
-        this.computeRet = null;
-        var scopeCopy = new Scope(scope.prev);
-        for (var v in scope.props) {
-          var local = scopeCopy.defProp(v);
-          for (var i = 0; i < fn.argNames.length; ++i) if (fn.argNames[i] == v && i < args.length)
-            args[i].propagate(local);
-        }
-        scopeCopy.fnType = new Fn(fn.name, self, args, fn.argNames, new AVal);
-        node.body.scope = scopeCopy;
-        walk.recursive(node.body, scopeCopy, null, scopeGatherer);
-        walk.recursive(node.body, scopeCopy, null, inferWrapper);
-        this.computeRet = computeRet;
-        return scopeCopy.fnType.retval;
-      };
+  function maybeTagAsInstantiated(node, scope) {
+    var score = scope.fnType.instantiateScore;
+    if (score && score / (node.end - node.start) > .01) {
+      maybeInstantiate(scope.prev, score / 2);
+      setFunctionInstantiated(node, scope);
       return true;
     }
   }
 
-  function maybeTagAsGeneric(node, fn) {
-    var target = fn.retval, targetInner, asArray;
+  function setFunctionInstantiated(node, scope) {
+    var fn = scope.fnType;
+    // Disconnect the arg avals, so that we can add info to them without side effects
+    for (var i = 0; i < fn.args.length; ++i) fn.args[i] = new AVal;
+    fn.self = new AVal;
+    var computeRet = fn.computeRet = function(self, args) {
+      // Prevent recursion
+      this.computeRet = null;
+      var oldOrigin = cx.curOrigin;
+      cx.curOrigin = fn.origin;
+      var scopeCopy = new Scope(scope.prev);
+      for (var v in scope.props) {
+        var local = scopeCopy.defProp(v);
+        for (var i = 0; i < args.length; ++i) if (fn.argNames[i] == v && i < args.length)
+          args[i].propagate(local);
+      }
+      scopeCopy.fnType = new Fn(fn.name, self, args, fn.argNames, ANull);
+      if (fn.arguments) {
+        var argset = scopeCopy.fnType.arguments = new AVal;
+        scopeCopy.defProp("arguments").addType(new Arr(argset));
+        for (var i = 0; i < args.length; ++i) args[i].propagate(argset);
+      }
+      node.body.scope = scopeCopy;
+      walk.recursive(node.body, scopeCopy, null, scopeGatherer);
+      walk.recursive(node.body, scopeCopy, null, inferWrapper);
+      this.computeRet = computeRet;
+      cx.curOrigin = oldOrigin;
+      return scopeCopy.fnType.retval;
+    };
+  }
+
+  function maybeTagAsGeneric(node, scope) {
+    var fn = scope.fnType, target = fn.retval;
+    if (target == ANull) return;
+    var targetInner, asArray;
     if (!target.isEmpty() && (targetInner = target.getType()) instanceof Arr)
       target = asArray = targetInner.getProp("<i>");
-    if (!target.isEmpty()) return;
 
     function explore(aval, path, depth) {
       if (depth > 3 || !aval.forward) return;
@@ -677,19 +704,15 @@
           newPath += prop.pathExt;
           dest = prop.target;
         } else continue;
-        if (dest == target) throw {foundPath: newPath};
-        explore(dest, newPath, depth + 1);
+        if (dest == target) return newPath;
+        var found = explore(dest, newPath, depth + 1);
+        if (found) return found;
       }
     }
 
-    var foundPath;
-    try {
-      explore(fn.self, "$this", 0);
-      for (var i = 0; i < fn.args.length; ++i)
-        explore(fn.args[i], "$" + i, 0);
-    } catch (e) {
-      if (!(foundPath = e.foundPath)) throw e;
-    }
+    var foundPath = explore(fn.self, "!this", 0);
+    for (var i = 0; !foundPath && i < fn.args.length; ++i)
+      foundPath = explore(fn.args[i], "!" + i, 0);
 
     if (foundPath) {
       if (asArray) foundPath = "[" + foundPath + "]";
@@ -718,7 +741,7 @@
         argNames.push(param.name);
         argVals.push(addVar(inner, param));
       }
-      inner.fnType = new Fn(node.id && node.id.name, new AVal, argVals, argNames, new AVal);
+      inner.fnType = new Fn(node.id && node.id.name, new AVal, argVals, argNames, ANull);
       inner.fnType.originNode = node;
       if (node.id) {
         var decl = node.type == "FunctionDeclaration";
@@ -842,7 +865,7 @@
       var inner = node.body.scope, fn = inner.fnType;
       if (name && !fn.name) fn.name = name;
       c(node.body, scope, "ScopeBody");
-      maybeTagAsTypeManipulator(node, inner) || maybeTagAsGeneric(node, inner.fnType);
+      maybeTagAsInstantiated(node, inner) || maybeTagAsGeneric(node, inner);
       if (node.id) inner.getProp(node.id.name).addType(fn);
       return fn;
     }),
@@ -895,7 +918,7 @@
       if (node.left.type == "MemberExpression") {
         var obj = infer(node.left.object, scope, c);
         if (!obj.hasType(cx.topScope)) maybeMethod(node.right, obj);
-        if (pName == "prototype") maybeTypeManipulator(scope, 20);
+        if (pName == "prototype") maybeInstantiate(scope, 20);
         if (pName == "<i>") {
           // This is a hack to recognize for/in loops that copy
           // properties, and do the copying ourselves, insofar as we
@@ -903,17 +926,20 @@
           // information.
           var v = node.left.property.name, local = scope.props[v], over = local && local.iteratesOver;
           if (over) {
+            maybeInstantiate(scope, 20);
             var fromRight = node.right.type == "MemberExpression" && node.right.computed && node.right.property.name == v;
             over.forAllProps(function(prop, val, local) {
               if (local && prop != "prototype" && prop != "<i>")
-                obj.propagate(new PropHasSubset(prop, fromRight ? val : ANull, node.left.property));
+                obj.propagate(new PropHasSubset(prop, fromRight ? val : ANull));
             });
             return rhs;
           }
         }
         obj.propagate(new PropHasSubset(pName, rhs, node.left.property));
       } else { // Identifier
-        rhs.propagate(scope.defVar(node.left.name, node));
+        var v = scope.defVar(node.left.name, node);
+        if (v.maybePurge) v.maybePurge = false;
+        rhs.propagate(v);
       }
       return rhs;
     }),
@@ -928,7 +954,7 @@
     }),
     NewExpression: fill(function(node, scope, c, out) {
       if (node.callee.type == "Identifier" && node.callee.name in scope.props)
-        maybeTypeManipulator(scope, 20);
+        maybeInstantiate(scope, 20);
 
       for (var i = 0, args = []; i < node.arguments.length; ++i)
         args.push(infer(node.arguments[i], scope, c));
@@ -943,9 +969,18 @@
         args.push(infer(node.arguments[i], scope, c));
       if (node.callee.type == "MemberExpression") {
         var self = infer(node.callee.object, scope, c);
-        self.propagate(new HasMethodCall(propName(node.callee, scope, c), args, node.arguments, out));
+        var pName = propName(node.callee, scope, c);
+        if ((pName == "call" || pName == "apply") && 
+            scope.fnType && scope.fnType.args.indexOf(self) > -1)
+          maybeInstantiate(scope, 30);
+        self.propagate(new HasMethodCall(pName, args, node.arguments, out));
       } else {
         var callee = infer(node.callee, scope, c);
+        if (scope.fnType && scope.fnType.args.indexOf(callee) > -1)
+          maybeInstantiate(scope, 30);
+        var knownFn = callee.getFunctionType();
+        if (knownFn && knownFn.instantiateScore && scope.fnType)
+          maybeInstantiate(scope, knownFn.instantiateScore / 5);
         callee.propagate(new IsCallee(cx.topScope, args, node.arguments, out));
       }
     }),
@@ -963,8 +998,9 @@
       return prop;
     }),
     Identifier: ret(function(node, scope) {
-      if (node.name == "arguments" && !(node.name in scope.props))
-        scope.defProp(node.name, scope.fnType.originNode).addType(new Arr);
+      if (node.name == "arguments" && scope.fnType && !(node.name in scope.props))
+        scope.defProp(node.name, scope.fnType.originNode)
+          .addType(new Arr(scope.fnType.arguments = new AVal));
       return scope.getProp(node.name);
     }),
     ThisExpression: ret(function(node, scope) {
@@ -987,7 +1023,7 @@
     FunctionDeclaration: function(node, scope, c) {
       var inner = node.body.scope, fn = inner.fnType;
       c(node.body, scope, "ScopeBody");
-      maybeTagAsTypeManipulator(node, inner) || maybeTagAsGeneric(node, inner.fnType);
+      maybeTagAsInstantiated(node, inner) || maybeTagAsGeneric(node, inner);
       var prop = scope.getProp(node.id.name);
       prop.addType(fn);
       interpretComments(node, node.comments, scope, prop, fn);
@@ -1003,15 +1039,17 @@
     },
 
     ReturnStatement: function(node, scope, c) {
-      if (node.argument && scope.fnType)
+      if (node.argument && scope.fnType) {
+        if (scope.fnType.retval == ANull) scope.fnType.retval = new AVal;
         infer(node.argument, scope, c, scope.fnType.retval);
+      }
     },
 
     ForInStatement: function(node, scope, c) {
       var source = infer(node.right, scope, c);
       if ((node.right.type == "Identifier" && node.right.name in scope.props) ||
           (node.right.type == "MemberExpression" && node.right.property.name == "prototype")) {
-        maybeTypeManipulator(scope, 5);
+        maybeInstantiate(scope, 5);
         var varName;
         if (node.left.type == "Identifier") {
           varName = node.left.name;
@@ -1304,7 +1342,6 @@
 
   function findType(node, scope) {
     var found = typeFinder[node.type](node, scope);
-    if (found.isEmpty()) found = found.getType() || found;
     return found;
   }
 
@@ -1329,6 +1366,18 @@
       }
     }
   });
+  var fullVisitor = exports.fullVisitor = walk.make({
+    MemberExpression: function(node, st, c) {
+      c(node.object, st, "Expression");
+      c(node.property, st, node.computed ? "Expression" : null);
+    },
+    ObjectExpression: function(node, st, c) {
+      for (var i = 0; i < node.properties.length; ++i) {
+        c(node.properties[i].value, st, "Expression");
+        c(node.properties[i].key, st);
+      }
+    }
+  }, searchVisitor);
 
   exports.findExpressionAt = function(ast, start, end, defaultScope, filter) {
     var test = filter || function(_t, node) {return typeFinder.hasOwnProperty(node.type);};
@@ -1369,6 +1418,24 @@
       }
     };
     walk.recursive(ast, baseScope, null, refFindWalker);
+  };
+
+  var simpleWalker = walk.make({
+    Function: function(node, st, c) { c(node.body, node.body.scope, "ScopeBody"); }
+  });
+
+  exports.findPropRefs = function(ast, scope, objType, propName, f) {
+    walk.simple(ast, {
+      MemberExpression: function(node, scope) {
+        if (node.computed || node.property.name != propName) return;
+        if (findType(node.object, scope).getType() == objType) f(node.property);
+      },
+      ObjectExpression: function(node, scope) {
+        if (findType(node, scope).getType() != objType) return;
+        for (var i = 0; i < node.properties.length; ++i)
+          if (node.properties[i].key.name == propName) f(node.properties[i].key);
+      }
+    }, simpleWalker, scope);
   };
 
   // LOCAL-VARIABLE QUERIES

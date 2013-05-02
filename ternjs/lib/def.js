@@ -62,7 +62,7 @@
       }
       var retType, computeRet, fn;
       if (this.eat(" -> ")) {
-        if (top && this.spec.indexOf("$", this.pos) > -1) {
+        if (top && this.spec.indexOf("!", this.pos) > -1) {
           retType = infer.ANull;
           computeRet = this.parseRetType();
         } else retType = this.parseType();
@@ -111,7 +111,7 @@
         var inner = this.parseRetType();
         this.eat("]") || this.error();
         return function(self, args) { return new infer.Arr(inner(self, args)); };
-      } else if (this.eat("$")) {
+      } else if (this.eat("!")) {
         var arg = this.word(/\d/);
         if (arg) {
           arg = Number(arg);
@@ -127,8 +127,8 @@
       return function(){return t;};
     },
     extendRetType: function(base) {
-      var propName = this.word(/[\w<>$]/) || this.error();
-      if (propName == "$ret") return function(self, args) {
+      var propName = this.word(/[\w<>$!]/) || this.error();
+      if (propName == "!ret") return function(self, args) {
         var lhs = base(self, args);
         if (lhs.retval) return lhs.retval;
         var rv = new infer.AVal;
@@ -156,15 +156,16 @@
     return type;
   }
 
-  function addEffect(fn, handler) {
+  function addEffect(fn, handler, replaceRet) {
     var oldCmp = fn.computeRet, rv = fn.retval;
     fn.computeRet = function(self, args) {
-      handler(self, args);
-      return oldCmp ? oldCmp(self, args) : rv;
+      var handled = handler(self, args);
+      var old = oldCmp ? oldCmp(self, args) : rv;
+      return replaceRet ? handled : old;
     };
   }
 
-  function parseEffect(effect, fn) {
+  var parseEffect = exports.parseEffect = function(effect, fn) {
     if (effect.indexOf("propagate ") == 0) {
       var p = new TypeParser(effect, 10);
       var getOrigin = p.parseRetType();
@@ -174,7 +175,8 @@
         getOrigin(self, args).propagate(getTarget(self, args));
       });
     } else if (effect.indexOf("call ") == 0) {
-      var p = new TypeParser(effect, 5);
+      var andRet = effect.indexOf("and return ", 5) == 5;
+      var p = new TypeParser(effect, andRet ? 16 : 5);
       var getCallee = p.parseRetType(), getSelf = null, getArgs = [];
       if (p.eat(" this=")) getSelf = p.parseRetType();
       while (p.eat(" ")) getArgs.push(p.parseRetType());
@@ -182,8 +184,10 @@
         var callee = getCallee(self, args);
         var slf = getSelf ? getSelf(self, args) : infer.ANull, as = [];
         for (var i = 0; i < getArgs.length; ++i) as.push(getArgs[i](self, args));
-        callee.propagate(new infer.IsCallee(slf, as, null, infer.ANull));
-      });
+        var result = andRet ? new infer.AVal : infer.ANull;
+        callee.propagate(new infer.IsCallee(slf, as, null, result));
+        return result;
+      }, andRet);
     } else if (effect.indexOf("custom ") == 0) {
       var customFunc = customFunctions[effect.slice(7).trim()];
       if (customFunc) addEffect(fn, customFunc);
@@ -202,7 +206,7 @@
     } else {
       throw new Error("Unknown effect type: " + effect);
     }
-  }
+  };
 
   var currentTopScope;
 

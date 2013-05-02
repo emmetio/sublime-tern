@@ -422,17 +422,17 @@
 
   // Test whether a given character code starts an identifier.
 
-  function isIdentifierStart(code) {
+  var isIdentifierStart = exports.isIdentifierStart = function(code) {
     if (code < 65) return code === 36;
     if (code < 91) return true;
     if (code < 97) return code === 95;
     if (code < 123)return true;
     return code >= 0xaa && nonASCIIidentifierStart.test(String.fromCharCode(code));
-  }
+  };
 
   // Test whether a given character is part of an identifier.
 
-  function isIdentifierChar(code) {
+  var isIdentifierChar = exports.isIdentifierChar = function(code) {
     if (code < 48) return code === 36;
     if (code < 58) return true;
     if (code < 65) return false;
@@ -440,7 +440,7 @@
     if (code < 97) return code === 95;
     if (code < 123)return true;
     return code >= 0xaa && nonASCIIidentifier.test(String.fromCharCode(code));
-  }
+  };
 
   // ## Tokenizer
 
@@ -826,7 +826,7 @@
           case 85: out += String.fromCharCode(readHexChar(8)); break; // 'U'
           case 116: out += "\t"; break; // 't' -> '\t'
           case 98: out += "\b"; break; // 'b' -> '\b'
-          case 118: out += "\v"; break; // 'v' -> '\u000b'
+          case 118: out += "\u000b"; break; // 'v' -> '\u000b'
           case 102: out += "\f"; break; // 'f' -> '\f'
           case 48: out += "\0"; break; // 0 -> '\0'
           case 13: if (input.charCodeAt(tokPos) === 10) ++tokPos; // '\r\n'
@@ -945,6 +945,10 @@
   function setStrict(strct) {
     strict = strct;
     tokPos = lastEnd;
+    while (tokPos < tokLineStart) {
+      tokLineStart = input.lastIndexOf("\n", tokLineStart - 2) + 1;
+      --tokCurLine;
+    }
     skipSpace();
     readToken();
   }
@@ -1231,8 +1235,8 @@
     case _try:
       next();
       node.block = parseBlock();
-      node.handlers = [];
-      while (tokType === _catch) {
+      node.handler = null;
+      if (tokType === _catch) {
         var clause = startNode();
         next();
         expect(_parenL);
@@ -1242,10 +1246,10 @@
         expect(_parenR);
         clause.guard = null;
         clause.body = parseBlock();
-        node.handlers.push(finishNode(clause, "CatchClause"));
+        node.handler = finishNode(clause, "CatchClause");
       }
       node.finalizer = eat(_finally) ? parseBlock() : null;
-      if (!node.handlers.length && !node.finalizer)
+      if (!node.handler && !node.finalizer)
         raise(node.start, "Missing catch or finally clause");
       return finishNode(node, "TryStatement");
 

@@ -9,7 +9,8 @@
 
   function resolveName(name, data) {
     var opts = data.options;
-    var base = opts.baseURL ? opts.baseURL + "/" : "";
+    var base = opts.baseURL || "";
+    if (base && base.charAt(base.length - 1) != "/") base += "/";
     if (!opts.paths) return base + name + ".js";
     var known = opts.paths[name];
     if (known) return base + known + ".js";
@@ -57,11 +58,17 @@
     return known;
   }
 
+  var EXPORT_OBJ_WEIGHT = 50;
+
   infer.registerFunction("requireJS", function(_self, args, argNodes) {
     var server = infer.cx().parent, data = server && server._requireJS;
     if (!data || !args.length) return infer.ANull;
 
-    var deps = [], value, fn;
+    var name = data.currentFile;
+    var out = data.interfaces[name];
+    if (!out) out = data.interfaces[name] = new infer.AVal;
+
+    var deps = [], fn;
     if (argNodes && args.length > 1) {
       var node = argNodes[args.length == 2 ? 0 : 1];
       if (node.type == "Literal" && typeof node.value == "string") {
@@ -69,35 +76,30 @@
       } else if (node.type == "ArrayExpression") for (var i = 0; i < node.elements.length; ++i) {
         var elt = node.elements[i];
         if (elt.type == "Literal" && typeof elt.value == "string") {
-          if (elt.value == "exports")
-            deps.push(value = new infer.Obj());
-          else
+          if (elt.value == "exports") {
+            var exports = new infer.Obj(true);
+            deps.push(exports);
+            out.addType(exports, EXPORT_OBJ_WEIGHT);
+          } else {
             deps.push(getInterface(elt.value, data));
+          }
         }
       }
-    } else if (argNodes && args.length == 1 && argNodes[0].type == "FunctionExpression") {
+    } else if (argNodes && args.length == 1 && argNodes[0].type == "FunctionExpression" && argNodes[0].params.length) {
       // Simplified CommonJS call
-      deps.push(getInterface("require", data), value = new infer.Obj());
+      var exports = new infer.Obj(true);
+      deps.push(getInterface("require", data), exports);
+      out.addType(exports, EXPORT_OBJ_WEIGHT);
       fn = args[0];
     }
 
     if (!fn) {
       fn = args[Math.min(args.length - 1, 2)];
-      if (!fn.isEmpty() && !fn.getFunctionType()) {
-        if (!value) value = fn;
-        fn = null;
-      }
-    }
-    if (fn) {
-      var retval = new infer.AVal;
-      fn.propagate(new infer.IsCallee(infer.ANull, deps, null, retval));
-      if (!value) value = retval;
+      if (!fn.isEmpty() && !fn.getFunctionType()) fn = null;
     }
 
-    var name = data.currentFile;
-    var known = data.interfaces[name];
-    if (!known) known = data.interfaces[name] = new infer.AVal;
-    value.propagate(known);
+    if (fn) fn.propagate(new infer.IsCallee(infer.ANull, deps, null, out));
+    else if (args.length) args[0].propagate(out);
 
     return infer.ANull;
   });
@@ -123,7 +125,7 @@
   var defs = {
     "!name": "requirejs.js",
     requirejs: {
-      "!type": "fn(deps: [string], callback: fn(), errback: fn()) -> $custom:requireJS",
+      "!type": "fn(deps: [string], callback: fn(), errback: fn()) -> !custom:requireJS",
       onError: "fn(err: +Error)",
       load: "fn(context: ?, moduleName: string, url: string)",
       config: "fn(config: ?)",
@@ -132,7 +134,7 @@
     },
     require: "requirejs",
     define: {
-      "!type": "fn(deps: [string], callback: fn()) -> $custom:requireJS",
+      "!type": "fn(deps: [string], callback: fn()) -> !custom:requireJS",
       amd: {
         jQuery: "bool"
       }
