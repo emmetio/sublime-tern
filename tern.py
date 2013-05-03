@@ -552,6 +552,7 @@ class TernjsNextOccurance(FindOccurance):
 			if r.begin() > caret_pos:
 				view.sel().clear()
 				view.sel().add(r)
+				view.show(r)
 				return
 
 class TernjsPreviousOccurance(FindOccurance):
@@ -563,6 +564,7 @@ class TernjsPreviousOccurance(FindOccurance):
 			if r.begin() < caret_pos:
 				view.sel().clear()
 				view.sel().add(r)
+				view.show(r)
 				return
 
 def plugin_loaded():
