@@ -423,7 +423,7 @@ class TernJSEventListener(sublime_plugin.EventListener):
 
 
 	def on_query_completions(self, view, prefix, locations):
-		if not can_run() or not completions_allowed(view) or view.get_regions(rename_region_key):
+		if not completions_allowed(view) or view.get_regions(rename_region_key) or not can_run():
 			return None
 
 		proj = project.project_for_view(view) or {}
