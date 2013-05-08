@@ -49,6 +49,7 @@ def is_st3():
 
 def init():
 	globals()['user_settings'] = sublime.load_settings('Preferences.sublime-settings')
+	globals()['settings'] = sublime.load_settings('TernJS.sublime-settings')
 
 	# setup environment for PyV8 loading
 	pyv8_paths = [
@@ -326,7 +327,7 @@ def sync_project(p, check_exists=False):
 
 	config = p.get('config', {})
 	# collect libraries for current project
-	libs = copy(ternjs.DEFAULT_LIBS);
+	libs = copy(settings.get('default_libs', []));
 	for l in config.get('libs', []):
 		if l not in libs:
 			libs.append(l)

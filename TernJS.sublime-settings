@@ -1,0 +1,8 @@
+{
+	// Copy any modified settings to `User/TernJS.sublime-settings`
+	// otherwise modifications will not survive updates.
+
+	// List of default TernJS definition libraries that should be
+	// loaded for every JS file and project
+	"default_libs": ["ecma5"]
+}
