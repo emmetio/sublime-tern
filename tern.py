@@ -150,6 +150,9 @@ def ternjs_file_reader(f, proj=None):
 			return ''
 
 	file_path = f
+	if not os.path.isabs(file_path) and proj and proj['dir']:
+		file_path = os.path.join(proj['dir'], file_path)
+
 	if not os.path.exists(file_path) and proj and proj['config']:
 		# Unable to find file, it might be a RequireJS module.
 		# If project contains "path" option, iterate on it
@@ -281,7 +284,7 @@ def completion_item(item):
 	"Returns ST completion representation for given Tern one"
 	t = item['type']
 	label = item['text']
-	value = item['text']
+	value = item['text'].replace('$', '\\$')
 	fn_def = sanitize_func_def(t)
 	if fn_def is not None:
 		args = [p.split(':')[0].strip() for p in fn_def.split(',')]

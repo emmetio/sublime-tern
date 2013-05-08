@@ -39,25 +39,29 @@ function startServer(project, libs) {
 
 		ternServers[project.id] = new tern.Server({
 			getFile: function(name, callback) {
-				// log('Requesting file ' + name);
+				var content = sublimeReadFile(name, project) || '';
+				if (callback) {
+					callback(null, content);
+				}
 				return sublimeReadFile(name, project) || '';
 			}, 
 			defs: defs,
 			plugins: pluginOptions,
 			debug: false,
-			async: false
+			async: false,
+			projectDir: project.dir
 		});
 	}
 
 	if (project.files) {
 		var updated = syncFiles(ternServers[project.id], project.files);
-		if (updated) {
-			// server was updated. Initiate a fake request 
-			// to make sure that first completions request won't take
-			// too much time
-			var req = buildFakeRequest();
-			ternServers[project.id].request(req, function() {});
-		}
+		// if (updated) {
+		// 	// server was updated. Initiate a fake request 
+		// 	// to make sure that first completions request won't take
+		// 	// too much time
+		// 	var req = buildFakeRequest();
+		// 	ternServers[project.id].request(req, function() {});
+		// }
 	}
 }
 
@@ -182,6 +186,7 @@ function buildRequest(view, query, allowFragments) {
 			type: 'full',
 			text: sublimeViewContents(view)
 		});
+		query.file = '#' + (files.length - 1);
 	}
 
 	return {

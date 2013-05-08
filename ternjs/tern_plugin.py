@@ -16,11 +16,18 @@ except NameError:
 def get_plugin(plugin, ctx, project=None):
 	"Factory method that returns plugin instance for given spec"
 	plugin = parse_plugin_def(plugin, ctx, project)
-	p = TernPlugin(plugin, lambda f: ctx.read_js_file(f, True))
-	if p.path not in _plugin_registry:
+	p = TernPlugin(plugin)
+	if p.id not in _plugin_registry:
+		path = p.path
+		if not isinstance(path, list):
+			path = [path]
+
 		try:
-			ctx.eval_js_file(p.path)
-			_plugin_registry.add(p.path)
+			for _p in path:
+				ctx.eval_js_file(_p)
+				p.path = _p
+				_plugin_registry.add(_p)
+				break
 		except Exception as e:
 			print(e)
 
@@ -66,15 +73,17 @@ def parse_plugin_def(plugin, ctx, project=None):
 	if project_path:
 		paths.append(project_path)
 
+	plugin['pluginPath'] = [os.path.join(p, plugin_file) for p in paths]
+
 	# try to find plugin
-	for p in paths:
-		try:
-			plugin_path = os.path.join(p, plugin_file)
-			ctx.read_js_file(plugin_path, True)
-			plugin['pluginPath'] = plugin_path
-			break
-		except Exception as e:
-			continue
+	# for p in paths:
+	# 	try:
+	# 		plugin_path = os.path.join(p, plugin_file)
+	# 		ctx.eval_js_file(plugin_path, True)
+	# 		plugin['pluginPath'] = plugin_path
+	# 		break
+	# 	except Exception as e:
+	# 		continue
 
 	return plugin
 
@@ -85,22 +94,11 @@ class TernPlugin():
 	You should not use this class directly, `get_plugin` or
 	`get_plugins_from_project` instead
 	"""
-	def __init__(self, plugin, read_file):
+	def __init__(self, plugin):
 		self.plugin = copy(plugin)
 		self.id = plugin['pluginId']
 		self.path = plugin['pluginPath']
-
-		# check if plugin has definitions
 		self.definitions = None
-		defs_path = os.path.join(os.path.dirname(self.path), '%s.json' % self.id)
-		try:
-			self.definitions = read_file(defs_path)
-			parsed_defs = json.loads(self.definitions)
-			if '!plugin' in parsed_defs:
-				self.id = parsed_defs['!plugin']
-
-		except Exception as e:
-			pass
 
 		plugin = copy(plugin)
 		for k in ['pluginId', 'pluginPath']:

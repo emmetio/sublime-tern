@@ -81,7 +81,7 @@
     this.handlers = {};
     this.files = [];
     this.analyses = 0;
-    this.fetchingFiles = 0;
+    this.pending = 0;
     this.asyncError = null;
 
     this.defs = options.defs.slice(0);
@@ -149,6 +149,14 @@
     signal: function(type, v1, v2, v3, v4) {
       var arr = this.handlers[type];
       if (arr) for (var i = 0; i < arr.length; ++i) arr[i].call(this, v1, v2, v3, v4);
+    },
+
+    startAsyncAction: function() {
+      ++this.pending;
+    },
+    finishAsyncAction: function(err) {
+      if (err) this.asyncError = err;
+      if (--this.pending == 0) this.signal("everythingFetched");
     }
   };
 
@@ -219,13 +227,12 @@
     var file = new File(name);
     srv.files.push(file);
     if (text) {
-      updateText(file, text)
+      updateText(file, text);
     } else if (srv.options.async) {
-      ++srv.fetchingFiles;
+      srv.startAsyncAction();
       srv.options.getFile(name, function(err, text) {
-        if (err) srv.asyncError = err;
         updateText(file, text || "");
-        if (--srv.fetchingFiles == 0) srv.signal("everythingFetched");
+        srv.finishAsyncAction(err);
       });
     } else {
       updateText(file, srv.options.getFile(name) || "");
@@ -276,7 +283,7 @@
   }
 
   function analyzeAll(srv, c) {
-    if (srv.fetchingFiles) return waitOnFetch(srv, c);
+    if (srv.pending) return waitOnFetch(srv, c);
 
     var e = srv.fetchError;
     if (e) { srv.fetchError = null; return c(e); }
@@ -753,4 +760,6 @@
   function listFiles(srv, query) {
     return {files: srv.files.map(function(f){return f.name;})};
   }
+
+  exports.version = "0.1.1";
 });

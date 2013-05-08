@@ -87,8 +87,14 @@ def get_ternjs_files(project, config=None):
 					  include=config.get('include', ['**/*.js']),
 					  exclude=config.get('exclude', None))
 
-	return [f for f in fileset.qualified_files()]
+	return [resolve_project_file_path(f, proj_dir) for f in fileset.qualified_files()]
 
+def resolve_project_file_path(f, project_dir):
+	if f.startswith(project_dir):
+		return os.path.relpath(f, project_dir)
+
+	return f
+		
 
 def projects_from_opened_files(window=None):
 	"Returns list of projects for all opened files in editor"
@@ -125,6 +131,7 @@ def info(project_id):
 	config = get_ternjs_config(project_id)
 	return {
 		'id': project_id,
+		'dir': os.path.dirname(project_id),
 		'config': config,
 		'files': get_ternjs_files(project_id, config)
 	}
@@ -149,7 +156,12 @@ def project_for_view(view):
 
 	# check if file inside project
 	for p in projects:
-		if file_name in p['files']:
+		proj_dir = p.get('dir')
+		proj_files = p['files']
+		if proj_dir:
+			proj_files = [os.path.join(proj_dir, pfile) for pfile in proj_files]
+
+		if file_name in proj_files:
 			return p
 
 	# file is not inside any known project: it might be a new file
