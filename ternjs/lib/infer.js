@@ -15,16 +15,15 @@
 (function(mod) {
   if (typeof exports == "object" && typeof module == "object") // CommonJS
     return mod(exports, require("acorn/acorn"), require("acorn/acorn_loose"), require("acorn/util/walk"),
-               require("./def"), require("./jsdoc"));
+               require("./def"));
   if (typeof define == "function" && define.amd) // AMD
-    return define(["exports", "acorn/acorn", "acorn/acorn_loose", "acorn/util/walk", "./def", "./jsdoc"], mod);
-  mod(self.tern || (self.tern = {}), acorn, acorn, acorn.walk, tern.def, tern.jsdoc); // Plain browser env
-})(function(exports, acorn, acorn_loose, walk, def, jsdoc) {
+    return define(["exports", "acorn/acorn", "acorn/acorn_loose", "acorn/util/walk", "./def"], mod);
+  mod(self.tern || (self.tern = {}), acorn, acorn, acorn.walk, tern.def); // Plain browser env
+})(function(exports, acorn, acorn_loose, walk, def) {
   "use strict";
 
   // Delayed initialization because of cyclic dependencies.
   def = exports.def = def.init({}, exports);
-  jsdoc = exports.jsdoc = jsdoc.init({}, exports);
 
   var toString = exports.toString = function(type, maxDepth, parent) {
     return !type || type == parent ? "?": type.toString(maxDepth);
@@ -57,7 +56,7 @@
 
   // ABSTRACT VALUES
 
-  var WG_DEFAULT = 100, WG_MADEUP_PROTO = 10, WG_MULTI_MEMBER = 5, WG_GLOBAL_THIS = 2;
+  var WG_DEFAULT = 100, WG_MADEUP_PROTO = 10, WG_MULTI_MEMBER = 5, WG_GLOBAL_THIS = 2, WG_SPECULATIVE_THIS = 2;
 
   var AVal = exports.AVal = function() {
     this.types = [];
@@ -248,7 +247,17 @@
     }
   });
 
+  var disabledComputing = null;
+  function withDisabledComputing(fn, body) {
+    disabledComputing = {fn: fn, prev: disabledComputing};
+    try { return body(); } finally { disabledComputing = disabledComputing.prev; }
+  }
+
   var IsCallee = exports.IsCallee = constraint("self, args, argNodes, retval", {
+    init: function() {
+      Constraint.prototype.init();
+      this.disabled = disabledComputing;
+    },
     addType: function(fn, weight) {
       if (!(fn instanceof Fn)) return;
       for (var i = 0; i < this.args.length; ++i) {
@@ -256,10 +265,12 @@
         if (fn.arguments) this.args[i].propagate(fn.arguments, weight);
       }
       this.self.propagate(fn.self, this.self == cx.topScope ? WG_GLOBAL_THIS : weight);
-      if (!fn.computeRet)
-        fn.retval.propagate(this.retval, weight);
+      var compute = fn.computeRet;
+      if (compute) for (var d = this.disabled; d; d = d.prev) if (d.fn == fn) compute = null;
+      if (compute)
+        compute(this.self, this.args, this.argNodes).propagate(this.retval, weight);
       else
-        fn.computeRet(this.self, this.args, this.argNodes).propagate(this.retval, weight);
+        fn.retval.propagate(this.retval, weight);
     },
     typeHint: function() {
       var names = [];
@@ -278,14 +289,16 @@
     propHint: function() { return this.propName; }
   });
 
-  var IsCtor = constraint("target", {
+  var IsCtor = constraint("target, noReuse", {
     addType: function(f, weight) {
       if (!(f instanceof Fn)) return;
-      f.getProp("prototype").propagate(new IsProto(f, this.target), weight);
+      f.getProp("prototype").propagate(new IsProto(this.noReuse ? false : f, this.target), weight);
     }
   });
 
   var getInstance = exports.getInstance = function(obj, ctor) {
+    if (ctor == false) return new Obj(obj);
+
     if (!ctor) ctor = obj.hasCtor;
     if (!obj.instances) obj.instances = [];
     for (var i = 0; i < obj.instances.length; ++i) {
@@ -518,16 +531,16 @@
       }
       return Obj.prototype.getProp.call(this, prop);
     },
-    defProp: function(prop) {
+    defProp: function(prop, originNode) {
       if (prop == "prototype") {
         var found = this.hasProp(prop);
         if (found) return found;
-        found = Obj.prototype.defProp.call(this, prop);
+        found = Obj.prototype.defProp.call(this, prop, originNode);
         found.origin = this.origin;
         found.propagate(new FnPrototype(this));
         return found;
       }
-      return Obj.prototype.defProp.call(this, prop);
+      return Obj.prototype.defProp.call(this, prop, originNode);
     },
     getFunctionType: function() { return this; }
   });
@@ -564,6 +577,7 @@
     this.origins = [];
     this.curOrigin = "ecma5";
     this.paths = Object.create(null);
+    this.definitions = Object.create(null);
     this.purgeGen = 0;
     this.workList = null;
 
@@ -601,7 +615,7 @@
     if (cx.origins.indexOf(origin) < 0) cx.origins.push(origin);
   };
 
-  var baseMaxWorkDepth = 20, reduceMaxWorkDepth = .0001;
+  var baseMaxWorkDepth = 20, reduceMaxWorkDepth = .0005;
   function withWorklist(f) {
     if (cx.workList) return f(cx.workList);
 
@@ -661,27 +675,27 @@
     fn.self = new AVal;
     var computeRet = fn.computeRet = function(self, args) {
       // Prevent recursion
-      this.computeRet = null;
-      var oldOrigin = cx.curOrigin;
-      cx.curOrigin = fn.origin;
-      var scopeCopy = new Scope(scope.prev);
-      for (var v in scope.props) {
-        var local = scopeCopy.defProp(v);
-        for (var i = 0; i < args.length; ++i) if (fn.argNames[i] == v && i < args.length)
-          args[i].propagate(local);
-      }
-      scopeCopy.fnType = new Fn(fn.name, self, args, fn.argNames, ANull);
-      if (fn.arguments) {
-        var argset = scopeCopy.fnType.arguments = new AVal;
-        scopeCopy.defProp("arguments").addType(new Arr(argset));
-        for (var i = 0; i < args.length; ++i) args[i].propagate(argset);
-      }
-      node.body.scope = scopeCopy;
-      walk.recursive(node.body, scopeCopy, null, scopeGatherer);
-      walk.recursive(node.body, scopeCopy, null, inferWrapper);
-      this.computeRet = computeRet;
-      cx.curOrigin = oldOrigin;
-      return scopeCopy.fnType.retval;
+      return withDisabledComputing(fn, function() {
+        var oldOrigin = cx.curOrigin;
+        cx.curOrigin = fn.origin;
+        var scopeCopy = new Scope(scope.prev);
+        for (var v in scope.props) {
+          var local = scopeCopy.defProp(v);
+          for (var i = 0; i < args.length; ++i) if (fn.argNames[i] == v && i < args.length)
+            args[i].propagate(local);
+        }
+        scopeCopy.fnType = new Fn(fn.name, self, args, fn.argNames, ANull);
+        if (fn.arguments) {
+          var argset = scopeCopy.fnType.arguments = new AVal;
+          scopeCopy.defProp("arguments").addType(new Arr(argset));
+          for (var i = 0; i < args.length; ++i) args[i].propagate(argset);
+        }
+        node.body.scope = scopeCopy;
+        walk.recursive(node.body, scopeCopy, null, scopeGatherer);
+        walk.recursive(node.body, scopeCopy, null, inferWrapper);
+        cx.curOrigin = oldOrigin;
+        return scopeCopy.fnType.retval;
+      });
     };
   }
 
@@ -787,7 +801,7 @@
 
   function maybeMethod(node, obj) {
     if (node.type != "FunctionExpression") return;
-    obj.propagate(new AutoInstance(node.body.scope.fnType.self), 2);
+    obj.propagate(new AutoInstance(node.body.scope.fnType.self), WG_SPECULATIVE_THIS);
   }
 
   function unopResultType(op) {
@@ -856,7 +870,6 @@
         var val = obj.defProp(name, key);
         val.initializer = true;
         infer(prop.value, scope, c, val, name);
-        interpretComments(prop, prop.key.comments, scope, val);
         maybeMethod(prop.value, obj);
       }
       return obj;
@@ -952,7 +965,7 @@
       infer(node.consequent, scope, c, out);
       infer(node.alternate, scope, c, out);
     }),
-    NewExpression: fill(function(node, scope, c, out) {
+    NewExpression: fill(function(node, scope, c, out, name) {
       if (node.callee.type == "Identifier" && node.callee.name in scope.props)
         maybeInstantiate(scope, 20);
 
@@ -961,7 +974,7 @@
       var callee = infer(node.callee, scope, c);
       var self = new AVal;
       self.propagate(out);
-      callee.propagate(new IsCtor(self));
+      callee.propagate(new IsCtor(self, name && /\.prototype$/.test(name)));
       callee.propagate(new IsCallee(self, args, node.arguments, new IfObj(out)));
     }),
     CallExpression: fill(function(node, scope, c, out) {
@@ -986,7 +999,13 @@
     }),
     MemberExpression: ret(function(node, scope, c) {
       var name = propName(node, scope);
-      var prop = infer(node.object, scope, c).getProp(name);
+      var obj = infer(node.object, scope, c);
+      var prop = obj.getProp(name);
+      if (name == "prototype") {
+        var ctor = obj.getType();
+        if (ctor instanceof Fn && ctor.self.isEmpty())
+          prop.propagate(new AutoInstance(ctor.self), WG_SPECULATIVE_THIS);
+      }
       if (name == "<i>") {
         var propType = infer(node.property, scope, c);
         if (!propType.hasType(cx.num)) {
@@ -1026,7 +1045,6 @@
       maybeTagAsInstantiated(node, inner) || maybeTagAsGeneric(node, inner);
       var prop = scope.getProp(node.id.name);
       prop.addType(fn);
-      interpretComments(node, node.comments, scope, prop, fn);
     },
 
     VariableDeclaration: function(node, scope, c) {
@@ -1034,7 +1052,6 @@
         var decl = node.declarations[i], prop = scope.getProp(decl.id.name);
         if (decl.init)
           infer(decl.init, scope, c, prop, decl.id.name);
-        if (!i) interpretComments(node, node.comments, scope, prop);
       }
     },
 
@@ -1067,82 +1084,23 @@
 
   // PARSING
 
-  function isSpace(ch) {
-    return (ch < 14 && ch > 8) || ch === 32 || ch === 160;
+  function runPasses(passes, pass) {
+    var arr = passes && passes[pass];
+    var args = Array.prototype.slice.call(arguments, 2);
+    if (arr) for (var i = 0; i < arr.length; ++i) arr[i].apply(null, args);
   }
 
-  function onOwnLine(text, pos) {
-    for (; pos > 0; --pos) {
-      var ch = text.charCodeAt(pos - 1);
-      if (ch == 10) break;
-      if (!isSpace(ch)) return false;
-    }
-    return true;
-  }
-
-  // Gather comments directly before a function
-  function commentsBefore(text, pos) {
-    var found = "", emptyLines = 0;
-    out: while (pos > 0) {
-      var prev = text.charCodeAt(pos - 1);
-      if (prev == 10) {
-        for (var scan = --pos, sawNonWS = false; scan > 0; --scan) {
-          prev = text.charCodeAt(scan - 1);
-          if (prev == 47 && text.charCodeAt(scan - 2) == 47) {
-            if (!onOwnLine(text, scan - 2)) break out;
-            found = text.slice(scan, pos) + found;
-            emptyLines = 0;
-            pos = scan - 2;
-            break;
-          } else if (prev == 10) {
-            if (!sawNonWS && ++emptyLines > 1) break out;
-            break;
-          } else if (!sawNonWS && !isSpace(prev)) {
-            sawNonWS = true;
-          }
-        }
-      } else if (prev == 47 && text.charCodeAt(pos - 2) == 42) {
-        for (var scan = pos - 2; scan > 1; --scan) {
-          if (text.charCodeAt(scan - 1) == 42 && text.charCodeAt(scan - 2) == 47) {
-            if (!onOwnLine(text, scan - 2)) break out;
-            found = text.slice(scan, pos - 2) + "\n" + found;
-            emptyLines = 0;
-            break;
-          }
-        }
-        pos = scan - 2;
-      } else if (isSpace(prev)) {
-        --pos;
-      } else {
-        break;
-      }
-    }
-    return found;
-  }
-
-  var parse = exports.parse = function(text) {
+  var parse = exports.parse = function(text, passes) {
     var ast;
     try { ast = acorn.parse(text); }
     catch(e) { ast = acorn_loose.parse_dammit(text); }
-
-    function attachComments(node) {
-      var comments = commentsBefore(text, node.start);
-      if (comments) node.comments = comments;
-    }
-    walk.simple(ast, {
-      VariableDeclaration: attachComments,
-      FunctionDeclaration: attachComments,
-      ObjectExpression: function(node) {
-        for (var i = 0; i < node.properties.length; ++i)
-          attachComments(node.properties[i].key);
-      }
-    });
+    runPasses(passes, "postParse", ast, text);
     return ast;
   };
 
   // ANALYSIS INTERFACE
 
-  exports.analyze = function(ast, name, scope) {
+  exports.analyze = function(ast, name, scope, passes) {
     if (typeof ast == "string") ast = parse(ast);
 
     if (!name) name = "file#" + cx.origins.length;
@@ -1150,29 +1108,12 @@
 
     if (!scope) scope = cx.topScope;
     walk.recursive(ast, scope, null, scopeGatherer);
+    runPasses(passes, "preInfer", ast, scope);
     walk.recursive(ast, scope, null, inferWrapper);
+    runPasses(passes, "postInfer", ast, scope);
     
     cx.curOrigin = null;
   };
-
-  // COMMENT INTERPRETATION
-
-  function interpretComments(node, comments, scope, aval, type) {
-    if (!comments) return;
-
-    jsdoc.interpretComments(node, scope, aval, comments);
-
-    if (!type && aval.types.length) {
-      type = aval.types[aval.types.length - 1];
-      if (!(type instanceof Obj) || type.origin != cx.curOrigin || type.doc) type = null;
-    }
-
-    var dot = comments.search(/\.\s/);
-    if (dot > 5) comments = comments.slice(0, dot + 1);
-    comments = comments.trim().replace(/\s*\n\s*\*\s*|\s{1,}/g, " ");
-    aval.doc = comments;
-    if (type) type.doc = comments;
-  }
 
   // PURGING
 
@@ -1238,7 +1179,10 @@
     var test = makePredicate(origins, start, end);
     for (var s = scope; s; s = s.prev) for (var p in s.props) {
       var prop = s.props[p];
-      if (test(prop, prop.name)) prop.maybePurge = true;
+      if (test(prop, prop.originNode)) {
+        prop.maybePurge = true;
+        if (start == null && prop.originNode) prop.originNode = null;
+      }
     }
   };
 
@@ -1441,7 +1385,9 @@
   // LOCAL-VARIABLE QUERIES
 
   var scopeAt = exports.scopeAt = function(ast, pos, defaultScope) {
-    var found = walk.findNodeAround(ast, pos, "ScopeBody");
+    var found = walk.findNodeAround(ast, pos, function(tp, node) {
+      return tp == "ScopeBody" && node.scope;
+    });
     if (found) return found.node.scope;
     else return defaultScope || cx.topScope;
   };

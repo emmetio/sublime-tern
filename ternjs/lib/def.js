@@ -211,7 +211,7 @@
   var currentTopScope;
 
   var parsePath = exports.parsePath = function(path) {
-    var cx = infer.cx(), cached = cx.paths[path];
+    var cx = infer.cx(), cached = cx.paths[path], origPath = path;
     if (cached != null) return cached;
     cx.paths[path] = infer.ANull;
 
@@ -223,6 +223,7 @@
         if (path.charAt(name.length) == ".") {
           base = cx.localDefs[name];
           path = path.slice(name.length + 1);
+          break;
         }
       }
     }
@@ -255,7 +256,7 @@
     }
     // Uncomment this to get feedback on your poorly written .json files
     // if (base == infer.ANull) console.log("bad path: " + path + " (" + cx.curOrigin + ")");
-    cx.paths[path] = base == infer.ANull ? null : base;
+    cx.paths[origPath] = base == infer.ANull ? null : base;
     return base;
   };
 
@@ -324,7 +325,6 @@
         if (!isSimpleAnnotation(inner)) {
           passTwo(type, inner, innerPath);
         } else if (!type) {
-          if (!inner["!type"]) console.log(innerPath);
           parseType(inner["!type"], innerPath, null, true).propagate(known);
           type = known.getType();
         } else continue;
@@ -346,7 +346,7 @@
 
     infer.addOrigin(cx.curOrigin = data["!name"] || "env#" + cx.origins.length);
     cx.loading = data;
-    cx.localDefs = Object.create(null);
+    cx.localDefs = cx.definitions[cx.curOrigin] = Object.create(null);
 
     passOne(scope, data);
 
@@ -358,7 +358,7 @@
       }
       for (var name in def) {
         var spec = def[name];
-        if (typeof spec != "string") passTwo(cx.localDefs[name], def[name]);
+        if (typeof spec != "string") passTwo(cx.localDefs[name], def[name], name);
       }
     }
 
@@ -383,9 +383,11 @@
   var customFunctions = Object.create(null);
   infer.registerFunction = function(name, f) { customFunctions[name] = f; };
 
-  var IsCreated;
-  function initIsCreated() {
-    return IsCreated || (IsCreated = infer.constraint("created, target, spec", {
+  var _constraints;
+  function constraints() {
+    if (_constraints) return _constraints;
+    _constraints = {};
+    _constraints.IsCreated = infer.constraint("created, target, spec", {
       addType: function(tp) {
         if (tp instanceof infer.Obj && this.created++ < 5) {
           var derived = new infer.Obj(tp), spec = this.spec;
@@ -401,7 +403,16 @@
           this.target.addType(derived)
         }
       }
-    }));
+    });
+    _constraints.IsBound = infer.constraint("args, target", {
+      addType: function(tp) {
+        if (!(tp instanceof infer.Fn)) return;
+        var cut = Math.max(0, this.args.length - 1);
+        this.target.addType(new infer.Fn(tp.name, this.args[0] || infer.ANull,
+                                         tp.args.slice(cut), tp.argNames.slice(cut), tp.retval));
+      }
+    });
+    return _constraints;
   }
 
   infer.registerFunction("Object_create", function(self, args, argNodes) {
@@ -409,7 +420,13 @@
       return new infer.Obj();
 
     var result = new infer.AVal;
-    if (args[0]) args[0].propagate(new (initIsCreated())(0, result, args[1]));
+    if (args[0]) args[0].propagate(new (constraints().IsCreated)(0, result, args[1]));
+    return result;
+  });
+
+  infer.registerFunction("Function_bind", function(self, args) {
+    var result = new infer.AVal;
+    self.propagate(new (constraints().IsBound)(args, result));
     return result;
   });
 
