@@ -66,9 +66,9 @@
     this.name = name;
     this.scope = this.text = this.ast = this.lineOffsets = null;
   }
-  function updateText(file, text) {
+  function updateText(file, text, srv) {
     file.text = text;
-    file.ast = infer.parse(text);
+    file.ast = infer.parse(text, srv.passes);
     file.lineOffsets = null;
   }
 
@@ -78,18 +78,19 @@
     for (var o in defaultOptions) if (!options.hasOwnProperty(o))
       options[o] = defaultOptions[o];
 
-    this.handlers = {};
+    this.handlers = Object.create(null);
     this.files = [];
-    this.analyses = 0;
+    this.uses = 0;
     this.pending = 0;
     this.asyncError = null;
+    this.passes = Object.create(null);
 
     this.defs = options.defs.slice(0);
-    for (var plugin in options.plugins) if (options.plugins.hasOwnProperty(plugin)) {
-      if (plugin in plugins) {
-        var init = plugins[plugin](this, options.plugins[plugin]);
-        if (init && init.defs) this.defs.push(init.defs);
-      }
+    for (var plugin in options.plugins) if (options.plugins.hasOwnProperty(plugin) && plugin in plugins) {
+      var init = plugins[plugin](this, options.plugins[plugin]);
+      if (init && init.defs) this.defs.push(init.defs);
+      if (init && init.passes) for (var type in init.passes) if (init.passes.hasOwnProperty(type))
+        (this.passes[type] || (this.passes[type] = [])).push(init.passes[type]);
     }
 
     this.reset();
@@ -107,7 +108,7 @@
     },
     reset: function() {
       this.cx = new infer.Context(this.defs, this);
-      this.analyses = 0;
+      this.uses = 0;
       for (var i = 0; i < this.files.length; ++i) clearFile(this, this.files[i]);
       this.signal("reset");
     },
@@ -116,10 +117,10 @@
       var inv = invalidDoc(doc);
       if (inv) return c(inv);
 
-      var self = this, files = doc.files || [];
+      var self = this;
       doRequest(this, doc, function(err, data) {
         c(err, data);
-        if (self.analyses > 40) {
+        if (self.uses > 40) {
           self.reset();
           analyzeAll(self, function(){});
         }
@@ -169,6 +170,7 @@
     if (!query) c(null, {});
 
     var files = doc.files || [];
+    if (files.length) ++srv.uses;
     for (var i = 0; i < files.length; ++i) {
       var file = files[i];
       ensureFile(srv, file.name, file.type == "full" ? file.text : null)
@@ -205,12 +207,11 @@
   }
 
   function analyzeFile(srv, file) {
-    ++srv.analyses;
     infer.withContext(srv.cx, function() {
       file.scope = srv.cx.topScope;
       srv.signal("beforeLoad", file);
       infer.markVariablesDefinedBy(file.scope, file.name);
-      infer.analyze(file.ast, file.name, file.scope);
+      infer.analyze(file.ast, file.name, file.scope, srv.passes);
       infer.purgeMarkedVariables(file.scope);
       srv.signal("afterLoad", file);
     });
@@ -227,15 +228,15 @@
     var file = new File(name);
     srv.files.push(file);
     if (text) {
-      updateText(file, text);
+      updateText(file, text, srv);
     } else if (srv.options.async) {
       srv.startAsyncAction();
       srv.options.getFile(name, function(err, text) {
-        updateText(file, text || "");
+        updateText(file, text || "", srv);
         srv.finishAsyncAction(err);
       });
     } else {
-      updateText(file, srv.options.getFile(name) || "");
+      updateText(file, srv.options.getFile(name) || "", srv);
     }
   }
 
@@ -248,7 +249,7 @@
       });
       file.scope = null;
     }
-    if (newText != null) updateText(file, newText);
+    if (newText != null) updateText(file, newText, srv);
   }
 
   function fetchAll(srv, c) {
@@ -260,12 +261,12 @@
         done = false;
         srv.options.getFile(file.name, function(err, text) {
           if (err && !returned) { returned = true; return c(err); }
-          updateText(file, text || "");
+          updateText(file, text || "", srv);
           fetchAll(srv, c);
         });
       } else {
         try {
-          updateText(file, srv.options.getFile(file.name) || "");
+          updateText(file, srv.options.getFile(file.name) || "", srv);
         } catch (e) { return c(e); }
       }
     }
@@ -340,8 +341,8 @@
 
     var realFile = file.backing = findFile(srv.files, file.name);
     var offset = file.offset;
-    if (offset == null)
-      offset = file.offset = findLineStart(realFile, file.offsetLines) || 0;
+    if (file.offsetLines) offset = {line: file.offsetLines, ch: 0};
+    file.offset = offset = resolvePos(realFile, file.offsetLines == null ? file.offset : {line: file.offsetLines, ch: 0}, true);
     var line = firstLine(file.text);
     var foundPos = findMatchingPosition(line, realFile.text, offset);
     var pos = foundPos == null ? Math.max(0, realFile.text.lastIndexOf("\n", offset)) : foundPos;
@@ -359,8 +360,8 @@
       var scopeEnd = infer.scopeAt(realFile.ast, pos + text.length, realFile.scope);
       var scope = file.scope = scopeDepth(scopeStart) < scopeDepth(scopeEnd) ? scopeEnd : scopeStart;
       infer.markVariablesDefinedBy(scopeStart, file.name, pos, pos + file.text.length);
-      file.ast = infer.parse(file.text);
-      infer.analyze(file.ast, file.name, scope);
+      file.ast = infer.parse(file.text, srv.passes);
+      infer.analyze(file.ast, file.name, scope, srv.passes);
       infer.purgeMarkedVariables(scopeStart);
 
       // This is a kludge to tie together the function types (if any)
@@ -390,8 +391,8 @@
   function invalidDoc(doc) {
     if (doc.query) {
       if (typeof doc.query.type != "string") return ".query.type must be a string";
-      if (doc.query.start && !isPosition(doc.query.start)) return ".query.start must be a number";
-      if (doc.query.end && !isPosition(doc.query.end)) return ".query.end must be a number";
+      if (doc.query.start && !isPosition(doc.query.start)) return ".query.start must be a position";
+      if (doc.query.end && !isPosition(doc.query.end)) return ".query.end must be a position";
     }
     if (doc.files) {
       if (!Array.isArray(doc.files)) return "Files property must be an array";
@@ -401,8 +402,8 @@
         else if (typeof file.text != "string") return ".files[n].text must be a string";
         else if (typeof file.name != "string") return ".files[n].name must be a string";
         else if (file.type == "part") {
-          if (typeof file.offset != "number" && typeof file.offsetLines != "number")
-            return ".files[n].offset or .files[n].offsetLines must be a number";
+          if (!isPosition(file.offset) && typeof file.offsetLines != "number")
+            return ".files[n].offset must be a position";
         } else if (file.type != "full") return ".files[n].type must be \"full\" or \"part\"";
       }
     }
@@ -425,13 +426,20 @@
     return pos;
   }
 
-  function resolvePos(file, pos) {
+  function resolvePos(file, pos, tolerant) {
     if (typeof pos != "number") {
       var lineStart = findLineStart(file, pos.line);
-      if (lineStart == null) throw new Error("File doesn't contain a line " + pos.line);
-      pos = lineStart + pos.ch;
+      if (lineStart == null) {
+        if (tolerant) pos = file.text.length;
+        else throw new Error("File doesn't contain a line " + pos.line);
+      } else {
+        pos = lineStart + pos.ch;
+      }
     }
-    if (pos > file.text.length) throw new Error("Position " + pos + " is outside of file.");
+    if (pos > file.text.length) {
+      if (tolerant) pos = file.text.length;
+      else throw new Error("Position " + pos + " is outside of file.");
+    }
     return pos;
   }
 
@@ -632,14 +640,20 @@
   function findDef(srv, query, file) {
     var expr = findExpr(file, query), fileName, guess = false;
     infer.resetGuessing();
-    var type = infer.expressionType(expr), node = type.originNode, fileName = type.origin;
-    var result = {url: type.url, doc: type.doc, origin: type.origin};
+    var type = infer.expressionType(expr), node, fileName, result;
+    if (query.typeOnly && !(type instanceof infer.Type)) {
+      result = {};
+    } else {
+      node = type.originNode;
+      fileName = type.origin;
+      result = {url: type.url, doc: type.doc, origin: type.origin};
+    }
     if (type.types) for (var i = type.types.length - 1; i >= 0; --i) {
       var tp = type.types[i];
       storeTypeDocs(tp, result);
       if (!node && tp.originNode) { node = tp.originNode; fileName = tp.origin; break; }
     }
-    if (node && /^Function/.test(node.type) && node.id) node = node.id;
+    if (!query.typeOnly && node && /^Function/.test(node.type) && node.id) node = node.id;
 
     result.guess = infer.didGuess();
     if (node) {

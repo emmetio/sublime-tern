@@ -718,7 +718,7 @@
       "wrapInner": {
         "!type": "fn(wrappingElement: ?) -> jQuery.fn",
         "!url": "http://api.jquery.com/wrapInner/",
-        "doc": "Wrap an HTML structure around the content of each element in the set of matched elements."
+        "!doc": "Wrap an HTML structure around the content of each element in the set of matched elements."
       },
 
       "slice": {
@@ -762,9 +762,9 @@
       "!url": "http://api.jquery.com/jquery.ajaxTransport/",
       "!doc": "Creates an object that handles the actual transmission of Ajax data."
     },
-    "callbacks": {
+    "Callbacks": {
       "!type": "fn(flags: string) -> ?",
-      "!url": "http://api.jquery.com/jquery.callbacks/",
+      "!url": "http://api.jquery.com/jquery.Callbacks/",
       "!doc": "A multi-purpose callbacks list object that provides a powerful way to manage callback lists."
     },
     "contains": {
@@ -773,7 +773,7 @@
       "!doc": "Check to see if a DOM element is a descendant of another DOM element."
     },
     "cssHooks": {
-      "!type": "{}",
+      "!type": "?",
       "!url": "http://api.jquery.com/cssHooks/",
       "!doc": "Hook directly into jQuery to override how particular CSS properties are retrieved or set, normalize CSS property naming, or create custom properties."
     },
@@ -1131,7 +1131,7 @@
       "!doc": "Takes a well-formed JSON string and returns the resulting JavaScript object."
     },
     "parseXML": {
-      "!type": "fn(xml: string) -> XMLDocument",
+      "!type": "fn(xml: string) -> +XMLDocument",
       "!url": "http://api.jquery.com/jquery.parseXML/",
       "!doc": "Parses a string into an XML document."
     },
