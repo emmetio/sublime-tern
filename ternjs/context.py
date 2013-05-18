@@ -18,9 +18,9 @@ TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json']
 # Default libraries that should be loaded for every project
 DEFAULT_LIBS = ['ecma5']
 
-TERNJS_FILES = ['js/bootstrap.js', 
-			  'js/acorn.js', 'js/acorn_loose.js', 'js/walk.js', 
-			  'lib/tern.js', 'lib/def.js', 'lib/jsdoc.js', 'lib/infer.js', 
+TERNJS_FILES = ['js/bootstrap.js',
+			  'js/acorn.js', 'js/acorn_loose.js', 'js/walk.js',
+			  'lib/tern.js', 'lib/comment.js','lib/def.js', 'lib/jsdoc.js', 'lib/infer.js',
 			  'js/lodash.js', 'js/controller.js']
 
 try:
@@ -70,7 +70,7 @@ def import_pyv8():
 	# if we simply call `import PyV8` and module doesn't exists,
 	# Python will cache this failed import and will always
 	# throw exception even if this module appear in PYTHONPATH.
-	# To prevent this, we have to manually test if 
+	# To prevent this, we have to manually test if
 	# PyV8.py(c) exists in PYTHONPATH before importing PyV8
 	if 'PyV8' in sys.modules and 'PyV8' not in globals():
 		# PyV8 was loaded by ST2, create global alias
@@ -96,14 +96,14 @@ def import_pyv8():
 
 	if not loaded:
 		raise ImportError('No PyV8 module found')
-	
+
 
 class Context():
 	"""
 	Creates Emmet JS core context.
 	Before instantiating this class, make sure PyV8
 	is available in `sys.path`
-	
+
 	@param files: Additional files to load with JS core
 	@param path: Path to Emmet extensions
 	@param contrib: Python objects to contribute to JS execution context
@@ -141,7 +141,7 @@ class Context():
 
 	def load_plugin(self, p, project=None):
 		"""
-		Loads and initiates TernJS plugin. Returns additional defs 
+		Loads and initiates TernJS plugin. Returns additional defs
 		that plugin requires to operate properly
 		"""
 		return tern_plugin.get_plugin(p, self, project)
@@ -152,7 +152,7 @@ class Context():
 			try:
 				import_pyv8()
 			except ImportError as e:
-				return None 
+				return None
 
 			if 'PyV8' not in sys.modules:
 				# Binary is not available yet
@@ -163,7 +163,7 @@ class Context():
 
 			class Global():
 				isTernJS = True
-			
+
 			self._ctx = PyV8.JSContext(Global())
 			self._ctx.enter()
 
