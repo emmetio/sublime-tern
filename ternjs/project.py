@@ -82,7 +82,7 @@ def get_ternjs_files(project, config=None):
 	if config is None:
 		config = get_ternjs_config(project_path)
 
-	proj_dir = os.path.dirname(project_path)
+	proj_dir = config.get('dir', os.path.dirname(project_path))
 	fileset = FileSet(directory=proj_dir,
 					  include=config.get('include', ['**/*.js']),
 					  exclude=config.get('exclude', None))
@@ -106,11 +106,16 @@ def projects_from_opened_files(window=None):
 	result = set()
 	for wnd in windows:
 		for view in wnd.views():
-			f = view.file_name()
-			if f:
-				proj = locate_project(f, result)
-				if proj:
-					result.add(proj)
+			proj = None
+			if hasattr(view, 'project_file_name'):
+				# ST3 API: get project file from opened view
+				proj = view.project_file_name()
+			else:
+				f = view.file_name()
+				if f:
+					proj = locate_project(f, result)
+			if proj:
+				result.add(proj)
 
 	return list(result)
 
@@ -131,7 +136,7 @@ def info(project_id):
 	config = get_ternjs_config(project_id)
 	return {
 		'id': project_id,
-		'dir': os.path.dirname(project_id),
+		'dir':  config.get('dir', os.path.dirname(project_id)),
 		'config': config,
 		'files': get_ternjs_files(project_id, config)
 	}

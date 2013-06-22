@@ -474,7 +474,7 @@ class TernjsJumpToDefinition(sublime_plugin.TextCommand):
 
 				# resolve target file
 				if not os.path.isabs(target_file) and proj.get('id', 'empty')  != 'empty':
-					target_file = os.path.join(os.path.dirname(proj['id']), target_file)
+					target_file = os.path.join(proj['dir'], target_file)
 					dfn['file'] = target_file
 
 				if target_file != file_name_from_view(view):
