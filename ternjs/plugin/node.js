@@ -47,12 +47,19 @@
   // Assume node.js & access to local file system
   if (require) (function() {
     var fs = require("fs"), path = require("path");
+    var win = /win/.test(process.platform);
+
+    var resolve = path.resolve;
+    if (win) resolve = function(base, file) { return path.resolve(base, file).replace(/\\/g, "/"); };
 
     function findModuleDir(server) {
       if (server._node.moduleDir !== undefined) return server._node.moduleDir;
+      var dir = server.options.projectDir || "";
+      if (win) dir = dir.replace(/\\/g, "/");
 
-      for (var dir = server.options.projectDir || "";;) {
-        var modDir = path.resolve(dir, "node_modules");
+      for (;;) {
+        var modDir = resolve(dir, "node_modules");
+
         try {
           if (fs.statSync(modDir).isDirectory()) return server._node.moduleDir = modDir;
         } catch(e) {}
@@ -73,24 +80,24 @@
       if (!relative) {
         var modDir = findModuleDir(server);
         if (!modDir) return infer.ANull;
-        file = path.resolve(modDir, file);
+        file = resolve(modDir, file);
       }
 
       try {
-        var pkg = JSON.parse(fs.readFileSync(path.resolve(modDir, file + "/package.json")));
+        var pkg = JSON.parse(fs.readFileSync(resolve(modDir, file + "/package.json")));
       } catch(e) {}
       if (pkg && pkg.main) {
         file += "/" + pkg.main;
       } else {
         try {
-          if (fs.statSync(path.resolve(dir, file)).isDirectory())
+          if (fs.statSync(resolve(dir, file)).isDirectory())
             file += "/index.js";
         } catch(e) {}
       }
       if (!/\.js$/.test(file)) file += ".js";
 
       try {
-        if (!fs.statSync(path.resolve(dir, file)).isFile()) return infer.ANull;
+        if (!fs.statSync(resolve(dir, file)).isFile()) return infer.ANull;
       } catch(e) { return infer.ANull; }
 
       server.addFile(file);
@@ -133,7 +140,7 @@
     };
 
     server.on("beforeLoad", function(file) {
-      this._node.currentFile = file.name;
+      this._node.currentFile = file.name.replace(/\\/g, "/");
       file.scope = buildWrappingScope(file.scope, file.name, file.ast);
     });
 
@@ -142,7 +149,7 @@
       exportsFromScope(file.scope).propagate(getModule(this._node, file.name));
     });
 
-    server.on("reset", function(file) {
+    server.on("reset", function() {
       this._node.modules = Object.create(null);
     });
 
@@ -2083,7 +2090,7 @@
               "!url": "http://nodejs.org/api/crypto.html#crypto_cipher_update_data_input_encoding_output_encoding",
               "!doc": "Updates the cipher with data, the encoding of which is given in input_encoding and can be 'utf8', 'ascii' or 'binary'. If no encoding is provided, then a buffer is expected."
             },
-            final: {
+            "final": {
               "!type": "fn(output_encoding?: string) -> +Buffer",
               "!url": "http://nodejs.org/api/crypto.html#crypto_cipher_final_output_encoding",
               "!doc": "Returns any remaining enciphered contents, with output_encoding being one of: 'binary', 'base64' or 'hex'. If no encoding is provided, then a buffer is returned."
@@ -2116,7 +2123,7 @@
               "!url": "http://nodejs.org/api/crypto.html#crypto_decipher_update_data_input_encoding_output_encoding",
               "!doc": "Updates the decipher with data, which is encoded in 'binary', 'base64' or 'hex'. If no encoding is provided, then a buffer is expected."
             },
-            final: {
+            "final": {
               "!type": "fn(output_encoding?: string) -> +Buffer",
               "!url": "http://nodejs.org/api/crypto.html#crypto_decipher_final_output_encoding",
               "!doc": "Returns any remaining plaintext which is deciphered, with output_encoding being one of: 'binary', 'ascii' or 'utf8'. If no encoding is provided, then a buffer is returned."
@@ -2359,7 +2366,7 @@
           "!url": "http://nodejs.org/api/assert.html#assert_assert_notstrictequal_actual_expected_message",
           "!doc": "Tests strict non-equality, as determined by the strict not equal operator ( !== )"
         },
-        throws: {
+        "throws": {
           "!type": "fn(block: fn(), error?: ?, messsage?: string)",
           "!url": "http://nodejs.org/api/assert.html#assert_assert_throws_block_error_message",
           "!doc": "Expects block to throw an error. error can be constructor, regexp or validation function."

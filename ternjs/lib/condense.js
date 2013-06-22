@@ -109,13 +109,30 @@
     if (!hasProps(this)) return out;
 
     var obj = {"!type": out};
+    if (this.doc) obj["!doc"] = this.doc;
+    addSpan(this, obj, state);
     state.paths[this.path] = {structure: obj};
     setProps(this, obj, state);
     return this.path;
   };
 
+  function addSpan(node, target, state) {
+    var srv, file;
+    if (state.options.spans == false) return;
+    if (node.span) {
+      target["!span"] = node.span;
+    } else if (node.originNode) {
+      var srv = infer.cx().parent, file = srv && srv.findFile(node.origin);
+      if (!file) return null;
+      var pStart = file.asLineChar(node.originNode.start), pEnd = file.asLineChar(node.originNode.end);
+      target["!span"] = node.originNode.start + "[" + pStart.line + ":" + pStart.ch + "]-" +
+        node.originNode.end + "[" + pEnd.line + ":" + pEnd.ch + "]";
+    }
+  }
+
   function hasProps(obj) {
-    for (var prop in obj.props) return true;
+    if (obj.doc || obj.originNode) return true;
+    for (var _prop in obj.props) return true;
   }
 
   function setProps(source, target, state) {
@@ -155,6 +172,8 @@
 
     if (rec.mayCull == null && !proto && !hasProps(this)) rec.mayCull = true;
     if (proto) structure["!proto"] = proto;
+    if (this.doc) structure["!doc"] = this.doc;
+    addSpan(this, structure, state);
     setProps(this, structure, state);
     return this.path;
   };
@@ -171,12 +190,13 @@
       }
     }
 
-    for (var v in desc) if (!/^!(?:define|name|proto)$/.test(v))
+    for (var v in desc) if (!/^!(?:define|name|proto|doc|span|url)$/.test(v))
       desc[v] = sanitize(desc[v], state, path == null ? null : path ? path + "." + v : v);
     return desc;
   }
 
-  exports.condense = function(sources, name) {
+  exports.condense = function(sources, name, options) {
+    if (!options) options = {};
     if (typeof sources == "string") sources = [sources];
     if (!name) name = sources[0];
 
@@ -193,7 +213,8 @@
                  cx: cx,
                  minOrigin: minOrigin, maxOrigin: maxOrigin,
                  addedToForeign: [],
-                 seen: []};
+                 seen: [],
+                 options: options};
 
     setPath(cx.topScope, "", state, 0);
 

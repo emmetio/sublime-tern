@@ -20,7 +20,7 @@ DEFAULT_LIBS = ['ecma5']
 
 TERNJS_FILES = ['js/bootstrap.js',
 			  'js/acorn.js', 'js/acorn_loose.js', 'js/walk.js',
-			  'lib/tern.js', 'lib/comment.js','lib/def.js', 'lib/jsdoc.js', 'lib/infer.js',
+			  'lib/signal.js', 'lib/tern.js', 'lib/comment.js','lib/def.js', 'lib/jsdoc.js', 'lib/infer.js',
 			  'js/lodash.js', 'js/controller.js']
 
 try:

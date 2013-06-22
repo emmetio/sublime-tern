@@ -15,15 +15,12 @@
 (function(mod) {
   if (typeof exports == "object" && typeof module == "object") // CommonJS
     return mod(exports, require("acorn/acorn"), require("acorn/acorn_loose"), require("acorn/util/walk"),
-               require("./def"));
+               require("./def"), require("./signal"));
   if (typeof define == "function" && define.amd) // AMD
-    return define(["exports", "acorn/acorn", "acorn/acorn_loose", "acorn/util/walk", "./def"], mod);
-  mod(self.tern || (self.tern = {}), acorn, acorn, acorn.walk, tern.def); // Plain browser env
-})(function(exports, acorn, acorn_loose, walk, def) {
+    return define(["exports", "acorn/acorn", "acorn/acorn_loose", "acorn/util/walk", "./def", "./signal"], mod);
+  mod(self.tern || (self.tern = {}), acorn, acorn, acorn.walk, tern.def, tern.signal); // Plain browser env
+})(function(exports, acorn, acorn_loose, walk, def, signal) {
   "use strict";
-
-  // Delayed initialization because of cyclic dependencies.
-  def = exports.def = def.init({}, exports);
 
   var toString = exports.toString = function(type, maxDepth, parent) {
     return !type || type == parent ? "?": type.toString(maxDepth);
@@ -33,7 +30,7 @@
   // as prototype for AVals, Types, and Constraints because it
   // implements 'empty' versions of all the methods that the code
   // expects.
-  var ANull = exports.ANull = {
+  var ANull = exports.ANull = signal.mixin({
     addType: function() {},
     propagate: function() {},
     getProp: function() { return ANull; },
@@ -46,7 +43,7 @@
     propagatesTo: function() {},
     typeHint: function() {},
     propHint: function() {}
-  };
+  });
 
   function extend(proto, props) {
     var obj = Object.create(proto);
@@ -56,7 +53,8 @@
 
   // ABSTRACT VALUES
 
-  var WG_DEFAULT = 100, WG_MADEUP_PROTO = 10, WG_MULTI_MEMBER = 5, WG_GLOBAL_THIS = 2, WG_SPECULATIVE_THIS = 2;
+  var WG_DEFAULT = 100, WG_NEW_INSTANCE = 90, WG_MADEUP_PROTO = 10, WG_MULTI_MEMBER = 5,
+      WG_CATCH_ERROR = 5, WG_GLOBAL_THIS = 2, WG_SPECULATIVE_THIS = 2;
 
   var AVal = exports.AVal = function() {
     this.types = [];
@@ -73,6 +71,7 @@
         return;
       }
 
+      this.signal("addType", type);
       this.types.push(type);
       var forward = this.forward;
       if (forward) withWorklist(function(add) {
@@ -289,7 +288,7 @@
     propHint: function() { return this.propName; }
   });
 
-  var IsCtor = constraint("target, noReuse", {
+  var IsCtor = exports.IsCtor = constraint("target, noReuse", {
     addType: function(f, weight) {
       if (!(f instanceof Fn)) return;
       f.getProp("prototype").propagate(new IsProto(this.noReuse ? false : f, this.target), weight);
@@ -311,8 +310,8 @@
     return instance;
   };
 
-  var IsProto = constraint("ctor, target", {
-    addType: function(o, weight) {
+  var IsProto = exports.IsProto = constraint("ctor, target", {
+    addType: function(o, _weight) {
       if (!(o instanceof Obj)) return;
       if (o == cx.protos.Array)
         this.target.addType(new Arr);
@@ -322,7 +321,7 @@
   });
 
   var FnPrototype = constraint("fn", {
-    addType: function(o, weight) {
+    addType: function(o, _weight) {
       if (o instanceof Obj && !o.hasCtor)
         o.hasCtor = this.fn;
     }
@@ -370,7 +369,7 @@
     hasType: function(other) { return other == this; },
     isEmpty: function() { return false; },
     typeHint: function() { return this; },
-    getType: function() { return this; },
+    getType: function() { return this; }
   });
 
   var Prim = exports.Prim = function(proto, name) { this.name = name; this.proto = proto; };
@@ -446,15 +445,18 @@
       return this.maybeProps[prop] = new AVal;
     },
     broadcastProp: function(prop, val, local) {
-      // If this is a scope, it shouldn't be registered
-      if (local && !this.prev) registerProp(prop, this);
+      if (local) {
+        this.signal("addProp", prop, val);
+        // If this is a scope, it shouldn't be registered
+        if (!(this instanceof Scope)) registerProp(prop, this);
+      }
 
       if (this.onNewProp) for (var i = 0; i < this.onNewProp.length; ++i) {
         var h = this.onNewProp[i];
         h.onProtoProp ? h.onProtoProp(prop, val, local) : h(prop, val, local);
       }
     },
-    onProtoProp: function(prop, val, local) {
+    onProtoProp: function(prop, val, _local) {
       var maybe = this.maybeProps && this.maybeProps[prop];
       if (maybe) {
         delete this.maybeProps[prop];
@@ -569,7 +571,7 @@
 
   // INFERENCE CONTEXT
 
-  var Context = exports.Context = function(defs, parent) {
+  exports.Context = function(defs, parent) {
     this.parent = parent;
     this.props = Object.create(null);
     this.protos = Object.create(null);
@@ -615,7 +617,7 @@
     if (cx.origins.indexOf(origin) < 0) cx.origins.push(origin);
   };
 
-  var baseMaxWorkDepth = 20, reduceMaxWorkDepth = .0005;
+  var baseMaxWorkDepth = 20, reduceMaxWorkDepth = .0001;
   function withWorklist(f) {
     if (cx.workList) return f(cx.workList);
 
@@ -659,9 +661,20 @@
       scope.fnType.instantiateScore = (scope.fnType.instantiateScore || 0) + score;
   }
 
+  var NotSmaller = {};
+  function nodeSmallerThan(node, n) {
+    try {
+      walk.simple(node, {Expression: function() { if (--n <= 0) throw NotSmaller; }});
+      return true;
+    } catch(e) {
+      if (e == NotSmaller) return false;
+      throw e;
+    }
+  }
+
   function maybeTagAsInstantiated(node, scope) {
     var score = scope.fnType.instantiateScore;
-    if (score && score / (node.end - node.start) > .01) {
+    if (score && nodeSmallerThan(node, score * 5)) {
       maybeInstantiate(scope.prev, score / 2);
       setFunctionInstantiated(node, scope);
       return true;
@@ -673,7 +686,7 @@
     // Disconnect the arg avals, so that we can add info to them without side effects
     for (var i = 0; i < fn.args.length; ++i) fn.args[i] = new AVal;
     fn.self = new AVal;
-    var computeRet = fn.computeRet = function(self, args) {
+    fn.computeRet = function(self, args) {
       // Prevent recursion
       return withDisabledComputing(fn, function() {
         var oldOrigin = cx.curOrigin;
@@ -684,7 +697,9 @@
           for (var i = 0; i < args.length; ++i) if (fn.argNames[i] == v && i < args.length)
             args[i].propagate(local);
         }
-        scopeCopy.fnType = new Fn(fn.name, self, args, fn.argNames, ANull);
+        var argNames = fn.argNames.length != args.length ? fn.argNames.slice(0, args.length) : fn.argNames;
+        while (argNames.length < args.length) argNames.push("?");
+        scopeCopy.fnType = new Fn(fn.name, self, args, argNames, ANull);
         if (fn.arguments) {
           var argset = scopeCopy.fnType.arguments = new AVal;
           scopeCopy.defProp("arguments").addType(new Arr(argset));
@@ -699,7 +714,7 @@
     };
   }
 
-  function maybeTagAsGeneric(node, scope) {
+  function maybeTagAsGeneric(scope) {
     var fn = scope.fnType, target = fn.retval;
     if (target == ANull) return;
     var targetInner, asArray;
@@ -766,9 +781,10 @@
     TryStatement: function(node, scope, c) {
       c(node.block, scope, "Statement");
       if (node.handler) {
-        var name = node.handler.param.name;
-        addVar(scope, node.handler.param);
+        var v = addVar(scope, node.handler.param);
         c(node.handler.body, scope, "ScopeBody");
+        var e5 = cx.definitions.ecma5;
+        if (e5 && v.isEmpty()) getInstance(e5["Error.prototype"]).propagate(v, WG_CATCH_ERROR);
       }
       if (node.finalizer) c(node.finalizer, scope, "Statement");
     },
@@ -789,14 +805,6 @@
     if (prop.type == "Literal" && typeof prop.value == "string") return prop.value;
     if (c) infer(prop, scope, c, ANull);
     return "<i>";
-  }
-
-  function lvalName(node) {
-    if (node.type == "Identifier") return node.name;
-    if (node.type == "MemberExpression" && !node.computed) {
-      if (node.object.type != "Identifier") return node.property.name;
-      return node.object.name + "." + node.property.name;
-    }
   }
 
   function maybeMethod(node, obj) {
@@ -878,7 +886,7 @@
       var inner = node.body.scope, fn = inner.fnType;
       if (name && !fn.name) fn.name = name;
       c(node.body, scope, "ScopeBody");
-      maybeTagAsInstantiated(node, inner) || maybeTagAsGeneric(node, inner);
+      maybeTagAsInstantiated(node, inner) || maybeTagAsGeneric(inner);
       if (node.id) inner.getProp(node.id.name).addType(fn);
       return fn;
     }),
@@ -950,7 +958,7 @@
         }
         obj.propagate(new PropHasSubset(pName, rhs, node.left.property));
       } else { // Identifier
-        var v = scope.defVar(node.left.name, node);
+        var v = scope.defVar(node.left.name, node.left);
         if (v.maybePurge) v.maybePurge = false;
         rhs.propagate(v);
       }
@@ -973,8 +981,8 @@
         args.push(infer(node.arguments[i], scope, c));
       var callee = infer(node.callee, scope, c);
       var self = new AVal;
-      self.propagate(out);
       callee.propagate(new IsCtor(self, name && /\.prototype$/.test(name)));
+      self.propagate(out, WG_NEW_INSTANCE);
       callee.propagate(new IsCallee(self, args, node.arguments, new IfObj(out)));
     }),
     CallExpression: fill(function(node, scope, c, out) {
@@ -983,7 +991,7 @@
       if (node.callee.type == "MemberExpression") {
         var self = infer(node.callee.object, scope, c);
         var pName = propName(node.callee, scope, c);
-        if ((pName == "call" || pName == "apply") && 
+        if ((pName == "call" || pName == "apply") &&
             scope.fnType && scope.fnType.args.indexOf(self) > -1)
           maybeInstantiate(scope, 30);
         self.propagate(new HasMethodCall(pName, args, node.arguments, out));
@@ -1022,10 +1030,10 @@
           .addType(new Arr(scope.fnType.arguments = new AVal));
       return scope.getProp(node.name);
     }),
-    ThisExpression: ret(function(node, scope) {
+    ThisExpression: ret(function(_node, scope) {
       return scope.fnType ? scope.fnType.self : cx.topScope;
     }),
-    Literal: ret(function(node, scope) {
+    Literal: ret(function(node) {
       return literalType(node.value);
     })
   };
@@ -1042,7 +1050,7 @@
     FunctionDeclaration: function(node, scope, c) {
       var inner = node.body.scope, fn = inner.fnType;
       c(node.body, scope, "ScopeBody");
-      maybeTagAsInstantiated(node, inner) || maybeTagAsGeneric(node, inner);
+      maybeTagAsInstantiated(node, inner) || maybeTagAsGeneric(inner);
       var prop = scope.getProp(node.id.name);
       prop.addType(fn);
     },
@@ -1111,7 +1119,7 @@
     runPasses(passes, "preInfer", ast, scope);
     walk.recursive(ast, scope, null, inferWrapper);
     runPasses(passes, "postInfer", ast, scope);
-    
+
     cx.curOrigin = null;
   };
 
@@ -1135,7 +1143,7 @@
     if (arr && origins.length == 1) { origins = origins[0]; arr = false; }
     if (arr) {
       if (end == null) return function(n) { return origins.indexOf(n.origin) > -1; };
-      return function(n, pos) { return pos && pos.start >= start && pos.end <= end && origins.indexOf(n.origin) > -1; }
+      return function(n, pos) { return pos && pos.start >= start && pos.end <= end && origins.indexOf(n.origin) > -1; };
     } else {
       if (end == null) return function(n) { return n.origin == origins; };
       return function(n, pos) { return pos && pos.start >= start && pos.end <= end && n.origin == origins; };
@@ -1276,7 +1284,7 @@
     Identifier: function(node, scope) {
       return scope.hasProp(node.name) || ANull;
     },
-    ThisExpression: function(node, scope) {
+    ThisExpression: function(_node, scope) {
       return scope.fnType ? scope.fnType.self : cx.topScope;
     },
     Literal: function(node) {
@@ -1290,7 +1298,7 @@
   }
 
   var searchVisitor = exports.searchVisitor = walk.make({
-    Function: function(node, st, c) {
+    Function: function(node, _st, c) {
       var scope = node.body.scope;
       if (node.id) c(node.id, scope);
       for (var i = 0; i < node.params.length; ++i)
@@ -1310,7 +1318,7 @@
       }
     }
   });
-  var fullVisitor = exports.fullVisitor = walk.make({
+  exports.fullVisitor = walk.make({
     MemberExpression: function(node, st, c) {
       c(node.object, st, "Expression");
       c(node.property, st, node.computed ? "Expression" : null);
@@ -1365,7 +1373,7 @@
   };
 
   var simpleWalker = walk.make({
-    Function: function(node, st, c) { c(node.body, node.body.scope, "ScopeBody"); }
+    Function: function(node, _st, c) { c(node.body, node.body.scope, "ScopeBody"); }
   });
 
   exports.findPropRefs = function(ast, scope, objType, propName, f) {
@@ -1393,7 +1401,12 @@
   };
 
   exports.forAllLocalsAt = function(ast, pos, defaultScope, f) {
-    var scope = scopeAt(ast, pos, defaultScope), locals = [];
+    var scope = scopeAt(ast, pos, defaultScope);
     scope.gatherProperties(f, 0);
   };
+
+  // INIT DEF MODULE
+
+  // Delayed initialization because of cyclic dependencies.
+  def = exports.def = def.init({}, exports);
 });

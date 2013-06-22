@@ -27,6 +27,9 @@
     walk.simple(ast, {
       VariableDeclaration: attachComments,
       FunctionDeclaration: attachComments,
+      AssignmentExpression: function(node) {
+        if (node.operator == "=") attachComments(node);
+      },
       ObjectExpression: function(node) {
         for (var i = 0; i < node.properties.length; ++i)
           attachComments(node.properties[i].key);
@@ -47,6 +50,11 @@
                             scope.getProp(node.id.name),
                             node.body.scope.fnType);
       },
+      AssignmentExpression: function(node, scope) {
+        if (node.commentsBefore)
+          interpretComments(node, node.commentsBefore, scope,
+                            infer.expressionType({node: node.left, state: scope}));
+      },
       ObjectExpression: function(node, scope) {
         for (var i = 0; i < node.properties.length; ++i) {
           var prop = node.properties[i], key = prop.key;
@@ -63,7 +71,7 @@
   function interpretComments(node, comments, scope, aval, type) {
     jsdocInterpretComments(node, scope, aval, comments);
 
-    if (!type && aval.types.length) {
+    if (!type && aval instanceof infer.AVal && aval.types.length) {
       type = aval.types[aval.types.length - 1];
       if (!(type instanceof infer.Obj) || type.origin != infer.cx().curOrigin || type.doc)
         type = null;
@@ -72,7 +80,7 @@
     var first = comments[0], dot = first.search(/\.\s/);
     if (dot > 5) first = first.slice(0, dot + 1);
     first = first.trim().replace(/\s*\n\s*\*\s*|\s{1,}/g, " ");
-    aval.doc = first;
+    if (aval instanceof infer.AVal) aval.doc = first;
     if (type) type.doc = first;
   }
 
@@ -123,7 +131,7 @@
         pos = retType.end;
         ret = retType.type;
       }
-      type = new infer.Fn(null, infer.ANull, args.labels, args.types, ret);
+      type = new infer.Fn(null, infer.ANull, args.types, args.labels, ret);
     } else if (str.charAt(pos) == "[") {
       var inner = parseType(scope, str, pos + 1);
       if (!inner) return null;
@@ -209,6 +217,9 @@
       if (decl.init && decl.init.type == "FunctionExpression") fn = decl.init.body.scope.fnType;
     } else if (node.type == "FunctionDeclaration") {
       fn = node.body.scope.fnType;
+    } else if (node.type == "AssignmentExpression") {
+      if (node.right.type == "FunctionExpression")
+        fn = node.right.body.scope.fnType;
     } else { // An object property
       if (node.value.type == "FunctionExpression") fn = node.value.body.scope.fnType;
     }

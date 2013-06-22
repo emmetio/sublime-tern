@@ -19,7 +19,7 @@
 
   function resolveName(name, data) {
     var excl = name.indexOf("!");
-    if (excl > -1) name = name.slice(excl + 1);
+    if (excl > -1) name = name.slice(0, excl);
 
     var opts = data.options;
     var hasExt = /\.js$/.test(name);
@@ -43,7 +43,7 @@
   function getRequire(data) {
     if (!data.require) {
       data.require = new infer.Fn("require", infer.ANull, [infer.cx().str], ["module"], new infer.AVal);
-      data.require.computeRet = function(_self, args, argNodes) {
+      data.require.computeRet = function(_self, _args, argNodes) {
         if (argNodes.length && argNodes[0].type == "Literal" && typeof argNodes[0].value == "string")
           return getInterface(argNodes[0].value, data);
         return infer.ANull;
@@ -55,6 +55,18 @@
   function getInterface(name, data) {
     if (name == "require") return getRequire(data);
     if (name == "module") return infer.cx().definitions.requirejs.module;
+
+    if (data.options.override && Object.prototype.hasOwnProperty.call(data.options.override, name)) {
+      var over = data.options.override[name];
+      if (typeof over == "string" && over.charAt(0) == "=") return infer.def.parsePath(over.slice(1));
+      if (typeof over == "object") {
+        if (data.interfaces[name]) return data.interfaces[name];
+        var scope = data.interfaces[name] = new infer.Obj(null, name);
+        infer.def.load(over, scope);
+        return scope;
+      }
+      name = over;
+    }
 
     if (!/^(https?:|\/)|\.js$/.test(name))
       name = resolveName(name, data);
@@ -124,7 +136,7 @@
     server.on("beforeLoad", function(file) {
       this._requireJS.currentFile = file.name;
     });
-    server.on("reset", function(file) {
+    server.on("reset", function() {
       this._requireJS.interfaces = Object.create(null);
       this._requireJS.require = null;
     });
