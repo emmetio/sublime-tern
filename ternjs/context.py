@@ -161,35 +161,49 @@ class Context():
 			if self._use_unicode is None:
 				self._use_unicode = should_use_unicode()
 
-			class Global():
-				isTernJS = True
+			class JSContext(PyV8.JSContext):
+				def __enter__(self):
+					if not hasattr(self, '_counter'):
+						self._counter = 0
+					if not self._counter:
+						self.lock = PyV8.JSLocker()
+						self.lock.enter()
+						self.enter()
+						# print('Enter JS context')
 
-			self._ctx = PyV8.JSContext(Global())
-			self._ctx.enter()
+					self._counter += 1
+					return self
+
+				def __exit__(self, exc_type, exc_value, traceback):
+					self._counter -= 1
+					if self._counter < 1 or exc_type is not None:
+						# print('Exit JS context')
+						self._counter = 0
+						if self:
+							self.leave()
+						if self.lock:
+							self.lock.leave()
+							self.lock = None
+
+			self._ctx = JSContext()
 
 			for f in self._core_files:
 				self.eval_js_file(f)
 
 			# expose some methods
-			self._ctx.locals.log = js_log
-			self._ctx.locals.loadPlugin = self.load_plugin
+			with self._ctx as ctx:
+				self._ctx.locals.log = js_log
+				self._ctx.locals.loadPlugin = self.load_plugin
 
-			if self._contrib:
-				for k in self._contrib:
-					self._ctx.locals[k] = self._contrib[k]
-
-		if not hasattr(self._ctx.locals, 'isTernJS'):
-			print('Enter TernJS context')
-			self._ctx.enter()
+				if self._contrib:
+					for k in self._contrib:
+						self._ctx.locals[k] = self._contrib[k]
 
 		return self._ctx
 
 	def reset(self):
 		"Resets JS execution context"
 		if self._ctx:
-			# self._isolate.leave()
-			self._ctx.enter()
-			self._ctx.leave()
 			self._ctx = None
 			try:
 				PyV8.JSEngine.collect()
@@ -203,8 +217,10 @@ class Context():
 		return self.reader(full_path, self._use_unicode)
 
 	def eval(self, source):
-		self.js().eval(source)
+		with self.js() as ctx:
+			ctx.eval(source)
 
 	def eval_js_file(self, file_path, resolve_path=True):
-		self.js().eval(self.read_js_file(file_path, resolve_path), name=file_path, line=0, col=0)
+		with self.js() as ctx:
+			ctx.eval(self.read_js_file(file_path, resolve_path), name=file_path, line=0, col=0)
 

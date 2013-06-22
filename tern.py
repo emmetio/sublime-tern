@@ -320,8 +320,9 @@ def all_projects():
 def sync_project(p, check_exists=False):
 	if not can_run(): return
 
-	if check_exists and ctx.js().locals.hasServer(p['id']):
-		return
+	with ctx.js() as c:
+		if check_exists and c.locals.hasServer(p['id']):
+			return
 
 	print('Syncing project %s' % p['id'])
 
@@ -349,7 +350,8 @@ def sync_project(p, check_exists=False):
 
 	# pass data as JSON string to ensure that all
 	# data types are valid
-	ctx.js().locals.startServer(json.dumps(p, ensure_ascii=False), resolved_libs)
+	with ctx.js() as c:
+		c.locals.startServer(json.dumps(p, ensure_ascii=False), resolved_libs)
 
 class ProjectSyncThread(threading.Thread):
 	def __init__(self, projects):
@@ -373,8 +375,8 @@ def sync_all_projects():
 
 def reset_project(p):
 	if not can_run(): return
-
-	ctx.js().locals.killServer(p['id'])
+	with ctx.js() as c:
+		c.locals.killServer(p['id'])
 
 def reset_all_projects():
 	if not can_run(): return
@@ -422,7 +424,11 @@ class TernJSEventListener(sublime_plugin.EventListener):
 		if is_js_view(view):
 			p = project.project_for_view(view)
 			if p:
-				sublime.set_timeout(lambda: ctx.js().locals.forceFileUpdate(view, p['id']), 1)
+				def _callback():
+					with ctx.js() as c:
+						c.locals.forceFileUpdate(view, p['id'])
+
+				sublime.set_timeout(_callback, 1)
 			return
 
 
@@ -431,11 +437,12 @@ class TernJSEventListener(sublime_plugin.EventListener):
 			return None
 
 		proj = project.project_for_view(view) or {}
-		completions = ctx.js().locals.ternHints(view, proj.get('id', 'empty'))
-		if completions and hasattr(completions, 'list'):
-			cmpl = [completion_item(c) for c in completions['list']]
-			# print(cmpl)
-			return cmpl
+		with ctx.js() as c:
+			completions = c.locals.ternHints(view, proj.get('id', 'empty'))
+			if completions and hasattr(completions, 'list'):
+				cmpl = [completion_item(_c) for _c in completions['list']]
+				# print(cmpl)
+				return cmpl
 
 
 		return None
@@ -460,25 +467,26 @@ class TernjsJumpToDefinition(sublime_plugin.TextCommand):
 		view = active_view()
 
 		proj = project.project_for_view(view) or {}
-		dfn = ctx.js().locals.ternJumpToDefinition(view, proj.get('id', 'empty'))
-		if dfn:
-			target_file = dfn['file']
+		with ctx.js() as c:
+			dfn = c.locals.ternJumpToDefinition(view, proj.get('id', 'empty'))
+			if dfn:
+				target_file = dfn['file']
 
-			# resolve target file
-			if not os.path.isabs(target_file) and proj.get('id', 'empty')  != 'empty':
-				target_file = os.path.join(os.path.dirname(proj['id']), target_file)
-				dfn['file'] = target_file
+				# resolve target file
+				if not os.path.isabs(target_file) and proj.get('id', 'empty')  != 'empty':
+					target_file = os.path.join(os.path.dirname(proj['id']), target_file)
+					dfn['file'] = target_file
 
-			if target_file != file_name_from_view(view):
-				target_view = view.window().open_file(target_file)
+				if target_file != file_name_from_view(view):
+					target_view = view.window().open_file(target_file)
 
-				if not target_view.is_loading():
-					apply_jump_def(target_view, dfn)
+					if not target_view.is_loading():
+						apply_jump_def(target_view, dfn)
+					else:
+						globals()['_jump_def'] = dfn
+						return
 				else:
-					globals()['_jump_def'] = dfn
-					return
-			else:
-				apply_jump_def(view, dfn)
+					apply_jump_def(view, dfn)
 
 class TernjsRenameVariable(sublime_plugin.TextCommand):
 	def run(self, edit, **kw):
@@ -486,34 +494,35 @@ class TernjsRenameVariable(sublime_plugin.TextCommand):
 		view = active_view()
 
 		proj = project.project_for_view(view) or {}
-		refs = ctx.js().locals.ternFindRefs(view, proj.get('id', 'empty'))
-		
-		# do rename for local references only
-		regions = []
-		file_name = file_name_from_view(view)
-		caret_pos = view.sel()[0].begin()
-		ctx_region = None
+		with ctx.js() as c:
+			refs = c.locals.ternFindRefs(view, proj.get('id', 'empty'))
+			
+			# do rename for local references only
+			regions = []
+			file_name = file_name_from_view(view)
+			caret_pos = view.sel()[0].begin()
+			ctx_region = None
 
-		for r in refs['refs']:
-			if file_name == r['file']:
-				rg = sublime.Region(r['start'], r['end'])
-				if rg.contains(caret_pos):
-					ctx_region = len(regions)
-				regions.append(rg)
+			for r in refs['refs']:
+				if file_name == r['file']:
+					rg = sublime.Region(r['start'], r['end'])
+					if rg.contains(caret_pos):
+						ctx_region = len(regions)
+					regions.append(rg)
 
-		if regions:
-			sel = view.sel()
-			sel.clear()
-			for r in regions:
-				sel.add(r)
-			view.add_regions(rename_region_key, regions, 'string', flags=sublime.HIDDEN)
+			if regions:
+				sel = view.sel()
+				sel.clear()
+				for r in regions:
+					sel.add(r)
+				view.add_regions(rename_region_key, regions, 'string', flags=sublime.HIDDEN)
 
-			# create rename session
-			globals()['_rename_session'] = {
-				'old_name': view.substr(view.sel()[0]),
-				'ctx_region': ctx_region,
-				'caret_pos': caret_pos
-			}
+				# create rename session
+				globals()['_rename_session'] = {
+					'old_name': view.substr(view.sel()[0]),
+					'ctx_region': ctx_region,
+					'caret_pos': caret_pos
+				}
 
 class TernjsCommitRename(sublime_plugin.TextCommand):
 	def run(self, edit, **kw):
@@ -535,17 +544,18 @@ class FindOccurance(sublime_plugin.TextCommand):
 		view = active_view()
 
 		proj = project.project_for_view(view) or {}
-		refs = ctx.js().locals.ternFindRefs(view, proj.get('id', 'empty'))
+		with ctx.js() as c:
+			refs = c.locals.ternFindRefs(view, proj.get('id', 'empty'))
 
-		# use local references only
-		regions = []
-		file_name = file_name_from_view(view)
+			# use local references only
+			regions = []
+			file_name = file_name_from_view(view)
 
-		for r in refs['refs']:
-			if file_name == r['file']:
-				regions.append(sublime.Region(r['start'], r['end']))
+			for r in refs['refs']:
+				if file_name == r['file']:
+					regions.append(sublime.Region(r['start'], r['end']))
 
-		return regions
+			return regions
 
 class TernjsNextOccurance(FindOccurance):
 	def run(self, edit, **kw):
