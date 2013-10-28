@@ -4,5 +4,9 @@
 
 	// List of default TernJS definition libraries that should be
 	// loaded for every JS file and project
-	"default_libs": ["ecma5"]
+	"default_libs": ["ecma5"],
+
+	// Syntax scopes where Tern completion should work.
+	// Used for augumented JS syntxes where TernJS could possibly work
+	"syntax_scopes": "source.js"
 }

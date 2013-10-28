@@ -221,7 +221,7 @@ def js_file_reader(file_path, use_unicode=True):
 	return _js_file_reader(file_path, use_unicode)
 
 def is_js_view(view):
-	return view.score_selector(0, 'source.js') > 0
+	return view.score_selector(0, settings.get('syntax_scopes', 'source.js')) > 0
 
 def can_run():
 	return ctx and ctx.js()
@@ -406,7 +406,7 @@ def apply_jump_def(view, dfn=None):
 def completions_allowed(view):
 	"Check if TernJS completions allowed for given view"
 	caret_pos = view.sel()[0].begin()
-	if not view.score_selector(caret_pos, 'source.js - string - comment'):
+	if not is_js_view(view) or not view.score_selector(caret_pos, '-string -comment'):
 		return False
 
 	proj = project.project_for_view(view)
