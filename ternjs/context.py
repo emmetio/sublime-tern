@@ -13,7 +13,7 @@ is_python3 = sys.version_info[0] > 2
 
 BASE_PATH = os.path.abspath(os.path.dirname(__file__))
 LIBS_PATH = os.path.join(BASE_PATH, 'defs')
-TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json']
+TERNJS_LIBS = ['ecma5.json', 'browser.json', 'jquery.json', 'underscore.json']
 
 # Default libraries that should be loaded for every project
 DEFAULT_LIBS = ['ecma5']

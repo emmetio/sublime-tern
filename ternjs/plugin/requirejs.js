@@ -125,6 +125,40 @@
     return infer.ANull;
   });
 
+  // Parse simple ObjectExpression AST nodes to their corresponding JavaScript objects.
+  function parseExprNode(node) {
+    switch (node.type) {
+    case "ArrayExpression":
+      return node.elements.map(parseExprNode);
+    case "Literal":
+      return node.value;
+    case "ObjectExpression":
+      var obj = {};
+      node.properties.forEach(function(prop) {
+        var key = prop.key.name || prop.key.value;
+        obj[key] = parseExprNode(prop.value);
+      });
+      return obj;
+    }
+  }
+
+  infer.registerFunction("requireJSConfig", function(_self, _args, argNodes) {
+    var server = infer.cx().parent, data = server && server._requireJS;
+    if (data && argNodes && argNodes.length && argNodes[0].type == "ObjectExpression") {
+      var config = parseExprNode(argNodes[0]);
+      for (var key in config) if (config.hasOwnProperty(key)) {
+        var value = config[key], exists = data.options[key];
+        if (!exists) {
+          data.options[key] = value;
+        } else if (key == "paths") {
+          for (var path in value) if (value.hasOwnProperty(path) && !data.options.paths[path])
+            data.options.paths[path] = value[path];
+        }
+      }
+    }
+    return infer.ANull;
+  });
+
   tern.registerPlugin("requirejs", function(server, options) {
     server._requireJS = {
       interfaces: Object.create(null),
@@ -157,7 +191,7 @@
       "!type": "fn(deps: [string], callback: fn(), errback: fn()) -> !custom:requireJS",
       onError: "fn(err: +Error)",
       load: "fn(context: ?, moduleName: string, url: string)",
-      config: "fn(config: ?)",
+      config: "fn(config: ?) -> !custom:requireJSConfig",
       version: "string",
       isBrowser: "bool"
     },

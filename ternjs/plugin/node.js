@@ -8,6 +8,7 @@
   "use strict";
 
   function resolvePath(base, path) {
+    if (path[0] == "/") return path;
     var slash = base.lastIndexOf("/"), m;
     if (slash >= 0) path = base.slice(0, slash + 1) + path;
     while (m = /[^\/]*[^\/\.][^\/]*\/\.\.\//.exec(path))
@@ -19,24 +20,20 @@
     return data.modules[name] || (data.modules[name] = new infer.AVal);
   }
 
+  var WG_DEFAULT_EXPORT = 95;
+
   function buildWrappingScope(parent, origin, node) {
     var scope = new infer.Scope(parent);
     scope.node = node;
     infer.cx().definitions.node.require.propagate(scope.defProp("require"));
     var module = new infer.Obj(infer.cx().definitions.node.Module.getProp("prototype").getType());
     module.propagate(scope.defProp("module"));
-    var exports = new infer.Obj(true, "exports", origin);
+    var exports = new infer.Obj(true, "exports");
+    module.origin = exports.origin = origin;
     exports.propagate(scope.defProp("exports"));
-    exports.propagate(module.defProp("exports"));
+    var moduleExports = scope.exports = module.defProp("exports");
+    exports.propagate(moduleExports, WG_DEFAULT_EXPORT);
     return scope;
-  }
-
-  function exportsFromScope(scope) {
-    var mType = scope.getProp("module").getType(), exportsVal = mType && mType.getProp("exports");
-    if (!(exportsVal instanceof infer.AVal) || exportsVal.isEmpty())
-      return scope.getProp("exports");
-    else
-      return exportsVal.types[exportsVal.types.length - 1];
   }
 
   function resolveModule(server, name) {
@@ -46,62 +43,31 @@
 
   // Assume node.js & access to local file system
   if (require) (function() {
-    var fs = require("fs"), path = require("path");
-    var win = /win/.test(process.platform);
+    var fs = require("fs"), module_ = require("module"), path = require("path");
 
-    var resolve = path.resolve;
-    if (win) resolve = function(base, file) { return path.resolve(base, file).replace(/\\/g, "/"); };
-
-    function findModuleDir(server) {
-      if (server._node.moduleDir !== undefined) return server._node.moduleDir;
-      var dir = server.options.projectDir || "";
-      if (win) dir = dir.replace(/\\/g, "/");
-
-      for (;;) {
-        var modDir = resolve(dir, "node_modules");
-
-        try {
-          if (fs.statSync(modDir).isDirectory()) return server._node.moduleDir = modDir;
-        } catch(e) {}
-        var end = dir.lastIndexOf("/");
-        if (end <= 0) return server._node.moduleDir = null;
-        dir = dir.slice(0, end);
-      }
-    }
-
-    resolveModule = function(server, name, relative) {
-      var data = server._node, dir = server.options.projectDir || "";
+    resolveModule = function(server, name, parent) {
+      var data = server._node;
       if (data.options.dontLoad == true ||
           data.options.dontLoad && new RegExp(data.options.dontLoad).test(name) ||
           data.options.load && !new RegExp(data.options.load).test(name))
         return infer.ANull;
 
-      var file = name;
-      if (!relative) {
-        var modDir = findModuleDir(server);
-        if (!modDir) return infer.ANull;
-        file = resolve(modDir, file);
-      }
-
+      var currentModule = {
+        id: parent,
+        paths: module_._nodeModulePaths(path.dirname(parent))
+      };
       try {
-        var pkg = JSON.parse(fs.readFileSync(resolve(modDir, file + "/package.json")));
-      } catch(e) {}
-      if (pkg && pkg.main) {
-        file += "/" + pkg.main;
-      } else {
-        try {
-          if (fs.statSync(resolve(dir, file)).isDirectory())
-            file += "/index.js";
-        } catch(e) {}
-      }
-      if (!/\.js$/.test(file)) file += ".js";
-
-      try {
-        if (!fs.statSync(resolve(dir, file)).isFile()) return infer.ANull;
+        var file = module_._resolveFilename(name, currentModule);
       } catch(e) { return infer.ANull; }
-
-      server.addFile(file);
-      return data.modules[file] = data.modules[name] = new infer.AVal;
+      var known = data.modules[file];
+      if (known) {
+        return data.modules[name] = known;
+      } else {
+        // If the module resolves to a file that doesn't exist, then it is likely a node.js stdlib
+        // module that is not predefined below.
+        if (fs.existsSync(file) && /^(\.js)?$/.test(path.extname(file))) server.addFile(file);
+        return data.modules[file] = data.modules[name] = new infer.AVal;
+      }
     };
   })();
 
@@ -124,12 +90,29 @@
     if (data.options.modules && data.options.modules.hasOwnProperty(name)) {
       var scope = buildWrappingScope(cx.topScope, name);
       infer.def.load(data.options.modules[name], scope);
-      result = data.modules[name] = exportsFromScope(scope);
+      result = data.modules[name] = scope.exports;
     } else {
-      result = resolveModule(server, name, relative);
+      result = resolveModule(server, name, data.currentFile);
     }
     return argNodes[0].required = result;
   });
+
+  function preCondenseReach(state) {
+    var mods = infer.cx().parent._node.modules;
+    var node = state.roots["!node"] = new infer.Obj(null);
+    for (var name in mods) {
+      var prop = node.defProp(name.replace(/\./g, "`"));
+      mods[name].propagate(prop);
+      prop.origin = mods[name].origin;
+    }
+  }
+
+  function postLoadDef(data) {
+    var cx = infer.cx(), mods = cx.definitions[data["!name"]]["!node"];
+    var data = cx.parent._node;
+    if (mods) for (var name in mods.props)
+      mods.props[name].propagate(getModule(data, name.replace(/`/g, ".")))
+  }
 
   tern.registerPlugin("node", function(server, options) {
     server._node = {
@@ -140,20 +123,49 @@
     };
 
     server.on("beforeLoad", function(file) {
-      this._node.currentFile = file.name.replace(/\\/g, "/");
+      this._node.currentFile = resolvePath(server.options.projectDir + "/", file.name.replace(/\\/g, "/"));
       file.scope = buildWrappingScope(file.scope, file.name, file.ast);
     });
 
     server.on("afterLoad", function(file) {
       this._node.currentFile = null;
-      exportsFromScope(file.scope).propagate(getModule(this._node, file.name));
+      file.scope.exports.propagate(getModule(this._node, file.name));
     });
 
     server.on("reset", function() {
       this._node.modules = Object.create(null);
     });
 
-    return {defs: defs};
+    return {defs: defs,
+            passes: {preCondenseReach: preCondenseReach,
+                     postLoadDef: postLoadDef}};
+  });
+
+  tern.defineQueryType("node_exports", {
+    takesFile: true,
+    run: function(server, query, file) {
+      function describe(aval) {
+        var target = {}, type = aval.getType(false);
+        target.type = infer.toString(type, 3);
+        var doc = aval.doc || (type && type.doc), url = aval.url || (type && type.url);
+        if (doc) target.doc = doc;
+        if (url) target.url = url;
+        var span = tern.getSpan(aval) || (type && tern.getSpan(type));
+        if (span) tern.storeSpan(server, query, span, target);
+        return target;
+      }
+
+      var known = server._node.modules[file.name];
+      if (!known) return {};
+      var type = known.getType(false);
+      var resp = describe(known);
+      if (type instanceof infer.Obj) {
+        var props = resp.props = {};
+        for (var prop in type.props)
+          props[prop] = describe(type.props[prop]);
+      }
+      return resp;
+    }
   });
 
   var defs = {
@@ -2493,6 +2505,56 @@
         ca: "string",
         crl: "string",
         ciphers: "string"
+      },
+      buffer: {
+        Buffer: "Buffer",
+        INSPECT_MAX_BYTES: "number",
+        SlowBuffer: "Buffer"
+      },
+      module: {},
+      timers: {
+        setTimeout: {
+          "!type": "fn(callback: fn(), ms: number) -> timers.Timer",
+          "!url": "http://nodejs.org/api/globals.html#globals_settimeout_cb_ms",
+          "!doc": "Run callback cb after at least ms milliseconds. The actual delay depends on external factors like OS timer granularity and system load."
+        },
+        clearTimeout: {
+          "!type": "fn(id: timers.Timer)",
+          "!url": "http://nodejs.org/api/globals.html#globals_cleartimeout_t",
+          "!doc": "Stop a timer that was previously created with setTimeout(). The callback will not execute."
+        },
+        setInterval: {
+          "!type": "fn(callback: fn(), ms: number) -> timers.Timer",
+          "!url": "http://nodejs.org/api/globals.html#globals_setinterval_cb_ms",
+          "!doc": "Run callback cb repeatedly every ms milliseconds. Note that the actual interval may vary, depending on external factors like OS timer granularity and system load. It's never less than ms but it may be longer."
+        },
+        clearInterval: {
+          "!type": "fn(id: timers.Timer)",
+          "!url": "http://nodejs.org/api/globals.html#globals_clearinterval_t",
+          "!doc": "Stop a timer that was previously created with setInterval(). The callback will not execute."
+        },
+        setImmediate: {
+          "!type": "fn(callback: fn(), ms: number) -> timers.Timer",
+          "!url": "http://nodejs.org/api/timers.html#timers_setimmediate_callback_arg",
+          "!doc": "Schedule the 'immediate' execution of callback after I/O events callbacks."
+        },
+        clearImmediate: {
+          "!type": "fn(id: timers.Timer)",
+          "!url": "http://nodejs.org/api/timers.html#timers_clearimmediate_immediateid",
+          "!doc": "Stops an immediate from triggering."
+        },
+        Timer: {
+          unref: {
+            "!type": "fn()",
+            "!url": "http://nodejs.org/api/timers.html#timers_unref",
+            "!doc": "Create a timer that is active but if it is the only item left in the event loop won't keep the program running."
+          },
+          ref: {
+            "!type": "fn()",
+            "!url": "http://nodejs.org/api/timers.html#timers_unref",
+            "!doc": "Explicitly request the timer hold the program open (cancel the effect of 'unref')."
+          }
+        }
       }
     },
     process: {
@@ -2731,26 +2793,10 @@
       "!url": "http://nodejs.org/api/globals.html#globals_dirname",
       "!doc": "The name of the directory that the currently executing script resides in."
     },
-    setTimeout: {
-      "!type": "fn(callback: fn(), ms: number) -> ?",
-      "!url": "http://nodejs.org/api/globals.html#globals_settimeout_cb_ms",
-      "!doc": "Run callback cb after at least ms milliseconds. The actual delay depends on external factors like OS timer granularity and system load."
-    },
-    clearTimeout: {
-      "!type": "fn(timeoutId: ?)",
-      "!url": "http://nodejs.org/api/globals.html#globals_cleartimeout_t",
-      "!doc": "Stop a timer that was previously created with setTimeout(). The callback will not execute."
-    },
-    setInterval: {
-      "!type": "fn(callback: fn(), ms: number) -> ?",
-      "!url": "http://nodejs.org/api/globals.html#globals_setinterval_cb_ms",
-      "!doc": "Run callback cb repeatedly every ms milliseconds. Note that the actual interval may vary, depending on external factors like OS timer granularity and system load. It's never less than ms but it may be longer."
-    },
-    clearInterval: {
-      "!type": "fn(intervalId: ?)",
-      "!url": "http://nodejs.org/api/globals.html#globals_clearinterval_t",
-      "!doc": "Stop a timer that was previously created with setInterval(). The callback will not execute."
-    },
+    setTimeout: "timers.setTimeout",
+    clearTimeout: "timers.clearTimeout",
+    setInterval: "timers.setInterval",
+    clearInterval: "timers.clearInterval",
     module: {
       "!type": "+Module",
       "!url": "http://nodejs.org/api/globals.html#globals_module",
@@ -2793,8 +2839,7 @@
         writeFloatBE: "fn(value: number, offset: number, noAssert?: bool)",
         writeDoubleLE: "fn(value: number, offset: number, noAssert?: bool)",
         writeDoubleBE: "fn(value: number, offset: number, noAssert?: bool)",
-        fill: "fn(value: ?, offset?: number, end?: number)",
-        INSPECT_MAX_BYTES: "number"
+        fill: "fn(value: ?, offset?: number, end?: number)"
       },
       isBuffer: "fn(obj: ?) -> bool",
       byteLength: "fn(string: string, encoding?: string) -> number",

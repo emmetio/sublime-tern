@@ -157,7 +157,30 @@
       if (/^(number|integer)$/i.test(word)) type = infer.cx().num;
       else if (/^bool(ean)?$/i.test(word)) type = infer.cx().bool;
       else if (/^string$/i.test(word)) type = infer.cx().str;
-      else {
+      else if (/^array$/i.test(word)) {
+        var inner = null;
+        if (str.charAt(pos) == "." && str.charAt(pos + 1) == "<") {
+          var inAngles = parseType(scope, str, pos + 2);
+          if (!inAngles) return null;
+          pos = skipSpace(str, inAngles.end);
+          if (str.charAt(pos++) != ">") return null;
+          inner = inAngles.type;
+        }
+        type = new infer.Arr(inner);
+      } else if (/^object$/i.test(word)) {
+        type = new infer.Obj(true);
+        if (str.charAt(pos) == "." && str.charAt(pos + 1) == "<") {
+          var key = parseType(scope, str, pos + 2);
+          if (!key) return null;
+          pos = skipSpace(str, key.end);
+          if (str.charAt(pos++) != ",") return null;
+          var val = parseType(scope, str, pos);
+          if (!val) return null;
+          pos = skipSpace(str, val.end);
+          if (str.charAt(pos++) != ">") return null;
+          val.type.propagate(type.defProp("<i>"));
+        }
+      } else {
         var found = scope.hasProp(word);
         if (found) found = found.getType();
         if (!found) {
@@ -165,12 +188,19 @@
         } else if (found instanceof infer.Fn && /^[A-Z]/.test(word)) {
           var proto = found.getProp("prototype").getType();
           if (proto instanceof infer.Obj) type = infer.getInstance(proto);
+          else type = found;
         } else {
           type = found;
         }
       }
     }
-    return {type: type, end: pos};
+
+    var isOptional = false;
+    if (str.charAt(pos) == "=") {
+        ++pos;
+        isOptional = true;
+    }
+    return {type: type, end: pos, isOptional: isOptional};
   }
 
   function parseTypeOuter(scope, str, pos) {
@@ -202,6 +232,7 @@
           var name = m[2].slice(parsed.end).match(/^\s*([\w$]+)/);
           if (!name) continue;
           (args || (args = Object.create(null)))[name[1]] = parsed.type;
+          if (args) args[name[1]].isOptional = parsed.isOptional;
           break;
         }
       }
@@ -227,7 +258,10 @@
     if (fn && (args || ret)) {
       if (args) for (var i = 0; i < fn.argNames.length; ++i) {
         var name = fn.argNames[i], known = args[name];
-        if (known) known.propagate(fn.args[i]);
+        if (known) {
+            known.propagate(fn.args[i]);
+            if (args[name].isOptional) fn.argNames[i] += "?";
+        }
       }
       if (ret) ret.propagate(fn.retval);
     } else if (type) {
