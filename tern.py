@@ -4,6 +4,7 @@ import imp
 import re
 import json
 import threading
+import fnmatch
 from copy import copy
 
 import sublime, sublime_plugin
@@ -405,7 +406,20 @@ def apply_jump_def(view, dfn=None):
 def completions_allowed(view):
 	"Check if TernJS completions allowed for given view"
 	caret_pos = view.sel()[0].begin()
-	return view.score_selector(caret_pos, 'source.js - string - comment') > 0
+	if not view.score_selector(caret_pos, 'source.js - string - comment'):
+		return False
+
+	proj = project.project_for_view(view)
+	if proj and 'disable_completions' in proj['config']:
+		patterns = proj['config']['disable_completions']
+		if not isinstance(patterns, list):
+			patterns = [patterns]
+
+		for p in patterns:
+			if fnmatch.fnmatch(view.file_name(), p):
+				return False
+
+	return True
 
 class TernJSEventListener(sublime_plugin.EventListener):
 	def on_load(self, view):
