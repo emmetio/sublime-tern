@@ -156,28 +156,38 @@ def ternjs_file_reader(f, proj=None):
 		file_path = os.path.join(proj['dir'], file_path)
 
 	if not os.path.exists(file_path) and proj and proj['config']:
-		# Unable to find file, it might be a RequireJS module.
-		# If project contains "path" option, iterate on it
-		proj_path = os.path.dirname(proj['id'])
-		if file_path[0] == '/':
-			file_path = file_path[1:]
-
-
-		lookup_paths = [proj_path]
-
-		config = proj['config']
-		if hasattr(config, 'paths'):
-			for p in config['paths']:
-				if not os.path.isabs(p):
-					p = os.path.join(proj_path, p)
-				lookup_paths.append(p)
-
-
-		for p in lookup_paths:
-			target_path = os.path.join(p, file_path)
-			if os.path.exists(target_path):
-				file_path = target_path
+		# are we using NodeJS plugin? If so, try to resolve it
+		# with different extensions
+		found = False
+		for ext in ['.js', '.json']:
+			if os.path.exists(file_path + ext):
+				found = True
+				file_path += ext
 				break
+
+		if not found:
+			# Unable to find file, it might be a RequireJS module.
+			# If project contains "path" option, iterate on it
+			proj_path = os.path.dirname(proj['id'])
+			if file_path[0] == '/':
+				file_path = file_path[1:]
+
+
+			lookup_paths = [proj_path]
+
+			config = proj['config']
+			if hasattr(config, 'paths'):
+				for p in config['paths']:
+					if not os.path.isabs(p):
+						p = os.path.join(proj_path, p)
+					lookup_paths.append(p)
+
+
+			for p in lookup_paths:
+				target_path = os.path.join(p, file_path)
+				if os.path.exists(target_path):
+					file_path = target_path
+					break
 
 	try:
 		return _js_file_reader(file_path, True)

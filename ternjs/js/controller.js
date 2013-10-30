@@ -43,7 +43,7 @@ function startServer(project, libs) {
 				if (callback) {
 					callback(null, content);
 				}
-				return sublimeReadFile(name, project) || '';
+				return content;
 			}, 
 			defs: defs,
 			plugins: pluginOptions,
