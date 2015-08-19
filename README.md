@@ -1,4 +1,4 @@
-# TernJS for Sublime Text
+# Deprecated: use [Tern for Sublime](https://github.com/marijnh/tern_for_sublime) instead
 
 [TernJS](http://ternjs.net) is a JavaScript type inference engine written by [Marijn Haverbeke](http://marijnhaverbeke.nl). It analyses your JS code on-the-fly and provides autocompletion, function argument hints, jump-to-definition, and various automatic refactoring operations.
 
