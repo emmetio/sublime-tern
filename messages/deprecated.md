@@ -1,0 +1,1 @@
+The plugin is now deprecated. You can use official use Tern for Sublime instead: https://github.com/marijnh/tern_for_sublime
